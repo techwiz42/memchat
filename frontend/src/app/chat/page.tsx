@@ -1,0 +1,92 @@
+"use client";
+
+import { useEffect } from "react";
+import { useRouter } from "next/navigation";
+import { isLoggedIn } from "@/lib/auth";
+import { useAuth } from "@/hooks/useAuth";
+import { useChat } from "@/hooks/useChat";
+import { useVoiceSession } from "@/hooks/useVoiceSession";
+import ChatWindow from "@/components/ChatWindow";
+import VoiceButton from "@/components/VoiceButton";
+import VoiceStatus from "@/components/VoiceStatus";
+import TranscriptPanel from "@/components/TranscriptPanel";
+
+export default function ChatPage() {
+  const router = useRouter();
+  const { user, loading: authLoading, logout } = useAuth();
+  const { messages, loading: chatLoading, sendMessage, appendVoiceTranscript } = useChat();
+  const { status, transcripts, isActive, startSession, endSession } = useVoiceSession();
+
+  useEffect(() => {
+    if (!authLoading && !isLoggedIn()) {
+      router.replace("/login");
+    }
+  }, [authLoading, router]);
+
+  const handleStartVoice = async () => {
+    try {
+      await startSession();
+    } catch (e) {
+      console.error("Voice start failed:", e);
+    }
+  };
+
+  const handleEndVoice = async () => {
+    const transcript = await endSession();
+    if (transcript) {
+      appendVoiceTranscript(transcript);
+    }
+  };
+
+  if (authLoading) {
+    return (
+      <div className="flex items-center justify-center h-screen">
+        <div className="animate-spin w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col h-screen">
+      {/* Header */}
+      <header className="flex items-center justify-between px-4 py-3 border-b border-gray-200 bg-white">
+        <h1 className="text-lg font-semibold">Memchat</h1>
+        <div className="flex items-center gap-3">
+          <VoiceStatus status={status} />
+          <VoiceButton
+            isActive={isActive}
+            status={status}
+            onStart={handleStartVoice}
+            onEnd={handleEndVoice}
+          />
+          <span className="text-sm text-gray-500">{user?.email}</span>
+          <button
+            onClick={() => {
+              logout();
+              router.push("/login");
+            }}
+            className="text-sm text-gray-500 hover:text-gray-700"
+          >
+            Sign out
+          </button>
+        </div>
+      </header>
+
+      {/* Chat area */}
+      <main className="flex-1 overflow-hidden relative">
+        <ChatWindow
+          messages={messages}
+          loading={chatLoading}
+          onSend={sendMessage}
+        />
+
+        {/* Voice transcript overlay */}
+        {isActive && (
+          <div className="absolute bottom-20 left-4 right-4">
+            <TranscriptPanel transcripts={transcripts} />
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
