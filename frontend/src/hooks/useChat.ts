@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useEffect } from "react";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, apiUpload } from "@/lib/api";
 
 export interface ChatMessage {
   id: string;
@@ -9,6 +9,12 @@ export interface ChatMessage {
   content: string;
   source: "text" | "voice";
   created_at: string;
+}
+
+interface UploadResponse {
+  response: string;
+  filename: string;
+  chunks: number;
 }
 
 export function useChat() {
@@ -68,6 +74,60 @@ export function useChat() {
     }
   }, []);
 
+  const sendMessageWithFile = useCallback(
+    async (text: string, file: File) => {
+      const userMsg: ChatMessage = {
+        id: crypto.randomUUID(),
+        role: "user",
+        content: text
+          ? `${text}\n[Uploaded document: ${file.name}]`
+          : `[Uploaded document: ${file.name}]`,
+        source: "text",
+        created_at: new Date().toISOString(),
+      };
+      setMessages((prev) => [...prev, userMsg]);
+      setLoading(true);
+
+      try {
+        const formData = new FormData();
+        formData.append("file", file);
+        if (text) {
+          formData.append("message", text);
+        }
+
+        const data = await apiUpload<UploadResponse>(
+          "/documents/upload",
+          formData
+        );
+
+        const assistantMsg: ChatMessage = {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content: data.response,
+          source: "text",
+          created_at: new Date().toISOString(),
+        };
+        setMessages((prev) => [...prev, assistantMsg]);
+      } catch (e) {
+        console.error("Upload error:", e);
+        const errorMsg: ChatMessage = {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content:
+            e instanceof Error
+              ? `Upload failed: ${e.message}`
+              : "Sorry, the upload failed. Please try again.",
+          source: "text",
+          created_at: new Date().toISOString(),
+        };
+        setMessages((prev) => [...prev, errorMsg]);
+      } finally {
+        setLoading(false);
+      }
+    },
+    []
+  );
+
   const appendVoiceTranscript = useCallback((transcript: string) => {
     const msg: ChatMessage = {
       id: crypto.randomUUID(),
@@ -79,5 +139,12 @@ export function useChat() {
     setMessages((prev) => [...prev, msg]);
   }, []);
 
-  return { messages, loading, sendMessage, appendVoiceTranscript, loadHistory };
+  return {
+    messages,
+    loading,
+    sendMessage,
+    sendMessageWithFile,
+    appendVoiceTranscript,
+    loadHistory,
+  };
 }

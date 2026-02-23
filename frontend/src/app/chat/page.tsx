@@ -14,7 +14,7 @@ import TranscriptPanel from "@/components/TranscriptPanel";
 export default function ChatPage() {
   const router = useRouter();
   const { user, loading: authLoading, logout } = useAuth();
-  const { messages, loading: chatLoading, sendMessage, appendVoiceTranscript } = useChat();
+  const { messages, loading: chatLoading, sendMessage, sendMessageWithFile, appendVoiceTranscript } = useChat();
   const { status, transcripts, isActive, startSession, endSession } = useVoiceSession();
 
   useEffect(() => {
@@ -78,6 +78,7 @@ export default function ChatPage() {
           messages={messages}
           loading={chatLoading}
           onSend={sendMessage}
+          onSendWithFile={sendMessageWithFile}
         />
 
         {/* Voice transcript overlay */}

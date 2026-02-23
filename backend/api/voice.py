@@ -16,6 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth.jwt import get_current_user_id
 from config import settings
+from memory.embeddings import embed_text
+from memory.vector_store import store_embedding
 from models import VoiceSession, VoiceSessionStatus, Message, MessageSource, get_db
 from voice.omnia_client import OmniaVoiceClient, OmniaAPIError
 from voice.omnia_config import build_inline_call_config
@@ -50,11 +52,20 @@ async def start_voice_session(
     Creates a voice session token, builds the Omnia inline call config,
     and returns the joinUrl for the browser to connect via WebRTC.
     """
+    # Fetch recent conversation history for continuity
+    recent = await db.execute(
+        select(Message)
+        .where(Message.user_id == user_id)
+        .order_by(Message.created_at.desc())
+        .limit(10)
+    )
+    recent_messages = list(reversed(recent.scalars().all()))
+
     # Create session token for tool callback auth
     session_token = await create_session(user_id)
 
-    # Build inline call config
-    call_config = build_inline_call_config(session_token, str(user_id))
+    # Build inline call config with recent context
+    call_config = build_inline_call_config(session_token, str(user_id), recent_messages)
 
     # Create call via Omnia API
     client = OmniaVoiceClient(api_key=settings.omnia_api_key)
@@ -66,7 +77,7 @@ async def start_voice_session(
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Omnia API error: {e.message}")
 
     call_id = result.get("callId") or result.get("call_id") or result.get("id")
-    join_url = result.get("joinUrl") or result.get("join_url")
+    join_url = result.get("joinUrl") or result.get("join_url") or result.get("websocketUrl")
 
     if not call_id or not join_url:
         logger.error(f"Unexpected Omnia response: {result}")
@@ -123,15 +134,20 @@ async def end_voice_session(
     voice_session.summary = summary
     voice_session.ended_at = datetime.now(timezone.utc)
 
-    # Store transcript as conversation messages if available
+    # Store transcript as conversation message and embed into RAG
     if transcript:
+        transcript_content = f"[Voice conversation transcript]\n{transcript}"
         msg = Message(
             user_id=user_id,
             role="assistant",
-            content=f"[Voice conversation transcript]\n{transcript}",
+            content=transcript_content,
             source=MessageSource.VOICE,
         )
         db.add(msg)
+
+        # Embed voice transcript so it's findable via RAG in future text/voice sessions
+        embedding = await embed_text(transcript_content)
+        await store_embedding(db, user_id, transcript_content, embedding)
 
     await db.commit()
 

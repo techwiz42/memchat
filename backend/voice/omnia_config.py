@@ -9,10 +9,15 @@ The browser connects to Omnia directly via WebRTC (ultravox-client SDK).
 Omnia calls our backend tool endpoints when the LLM decides to use them.
 """
 
+from __future__ import annotations
+
 import logging
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from config import settings
+
+if TYPE_CHECKING:
+    from models.conversation import Message
 
 logger = logging.getLogger(__name__)
 
@@ -125,12 +130,40 @@ def build_tool_definitions(base_url: str, session_token: str, user_id: str) -> l
     return [rag_query_tool, store_memory_tool]
 
 
-def build_inline_call_config(session_token: str, user_id: str) -> dict[str, Any]:
+def _build_context_prompt(recent_messages: list[Message]) -> str:
+    """Build the system prompt, injecting recent conversation context if available."""
+    if not recent_messages:
+        return SYSTEM_PROMPT
+
+    lines = []
+    for msg in recent_messages:
+        prefix = "User" if msg.role == "user" else "Assistant"
+        # Truncate long messages to keep prompt reasonable
+        content = msg.content[:500]
+        lines.append(f"{prefix}: {content}")
+
+    context_block = "\n".join(lines)
+
+    return (
+        f"{SYSTEM_PROMPT}\n\n"
+        f"--- Recent conversation context (text chat) ---\n"
+        f"The user was just chatting via text before switching to voice. "
+        f"Here is their recent conversation for continuity:\n\n"
+        f"{context_block}\n\n"
+        f"Continue naturally from this context. Don't repeat what was already said, "
+        f"but be aware of it."
+    )
+
+
+def build_inline_call_config(
+    session_token: str, user_id: str, recent_messages: list[Message] | None = None
+) -> dict[str, Any]:
     """Build the full Omnia inline call configuration for a memchat voice session.
 
     Args:
         session_token: Voice session token for tool callback auth.
         user_id: User ID string.
+        recent_messages: Recent conversation messages for continuity across modes.
 
     Returns:
         Omnia inline call configuration dict ready for create_inline_call().
@@ -138,9 +171,10 @@ def build_inline_call_config(session_token: str, user_id: str) -> dict[str, Any]
     base_url = settings.public_base_url.rstrip("/")
 
     tool_definitions = build_tool_definitions(base_url, session_token, user_id)
+    system_prompt = _build_context_prompt(recent_messages or [])
 
     return {
-        "systemPrompt": SYSTEM_PROMPT,
+        "systemPrompt": system_prompt,
         "voice": settings.omnia_voice_name,
         "language": settings.omnia_language_code,
         "greeting": "Hey there! How can I help you today?",

@@ -43,3 +43,35 @@ export async function apiFetch<T = any>(
 
   return response.json();
 }
+
+export async function apiUpload<T = any>(
+  path: string,
+  formData: FormData
+): Promise<T> {
+  const token = getAccessToken();
+  const headers: Record<string, string> = {};
+
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+
+  // Do NOT set Content-Type — browser sets multipart boundary automatically
+  const response = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers,
+    body: formData,
+  });
+
+  if (response.status === 401) {
+    clearTokens();
+    window.location.href = "/login";
+    throw new Error("Unauthorized");
+  }
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.detail || `API error: ${response.status}`);
+  }
+
+  return response.json();
+}
