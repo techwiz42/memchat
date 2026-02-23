@@ -74,6 +74,7 @@ async def start_voice_session(
         session_token,
         str(user_id),
         recent_messages,
+        agent_name=user_settings.agent_name,
         voice_name=user_settings.omnia_voice_name,
         language_code=user_settings.omnia_language_code,
     )

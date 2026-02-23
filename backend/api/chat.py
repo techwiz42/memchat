@@ -47,7 +47,9 @@ class MessageOut(BaseModel):
     created_at: str
 
 
-SYSTEM_PROMPT = """You are a helpful personal assistant with access to the user's stored memories and knowledge.
+SYSTEM_PROMPT_TEMPLATE = """Your name is {agent_name}. Always refer to yourself as {agent_name} when asked your name or when introducing yourself.
+
+You are a helpful personal assistant with access to the user's stored memories and knowledge.
 When relevant context from the user's memory is provided, use it to give personalized, informed responses.
 If you don't have relevant information in the provided context, say so honestly.
 
@@ -68,8 +70,12 @@ async def chat(
     # Retrieve relevant context from user's memory
     context = await retrieve_context(db, user_id, body.message)
 
+    # Load per-user settings
+    user_settings = await get_or_create_settings(db, user_id)
+    system_prompt = SYSTEM_PROMPT_TEMPLATE.format(agent_name=user_settings.agent_name)
+
     # Build messages for LLM
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages = [{"role": "system", "content": system_prompt}]
     if context:
         messages.append({
             "role": "system",
@@ -88,9 +94,6 @@ async def chat(
         messages.append({"role": msg.role, "content": msg.content})
 
     messages.append({"role": "user", "content": body.message})
-
-    # Load per-user LLM settings
-    user_settings = await get_or_create_settings(db, user_id)
 
     # Call LLM
     client = _get_llm_client()

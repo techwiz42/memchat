@@ -38,6 +38,12 @@ async def startup():
             __import__("sqlalchemy").text("CREATE EXTENSION IF NOT EXISTS vector")
         )
         await conn.run_sync(Base.metadata.create_all)
+        # Migrate: add agent_name column if it doesn't exist
+        await conn.execute(
+            __import__("sqlalchemy").text(
+                "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS agent_name VARCHAR(100) DEFAULT 'Assistant'"
+            )
+        )
     logger.info("Database tables ready.")
 
     # Start background summarizer

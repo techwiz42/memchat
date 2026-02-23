@@ -18,6 +18,7 @@ class UserSettings(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False, index=True
     )
+    agent_name: Mapped[str] = mapped_column(String(100), default="Assistant")
     omnia_voice_name: Mapped[str] = mapped_column(String(100), default="Mark")
     omnia_language_code: Mapped[str] = mapped_column(String(10), default="en")
     llm_model: Mapped[str] = mapped_column(String(100), default="gpt-4o")

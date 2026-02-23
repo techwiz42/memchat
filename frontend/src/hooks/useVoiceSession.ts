@@ -94,6 +94,13 @@ export function useVoiceSession() {
     }
   }, []);
 
+  const sendText = useCallback((text: string) => {
+    const session = sessionRef.current;
+    if (session) {
+      session.sendText(text);
+    }
+  }, []);
+
   const endSession = useCallback(async (): Promise<string | null> => {
     const session = sessionRef.current;
     const callId = callIdRef.current;
@@ -145,5 +152,6 @@ export function useVoiceSession() {
     isActive,
     startSession,
     endSession,
+    sendText,
   };
 }

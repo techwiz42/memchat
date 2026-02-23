@@ -1,11 +1,11 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { isLoggedIn } from "@/lib/auth";
 import { useAuth } from "@/hooks/useAuth";
-import { useChat } from "@/hooks/useChat";
+import { useChat, UploadResponse } from "@/hooks/useChat";
 import { useVoiceSession } from "@/hooks/useVoiceSession";
 import ChatWindow from "@/components/ChatWindow";
 import VoiceButton from "@/components/VoiceButton";
@@ -16,13 +16,40 @@ export default function ChatPage() {
   const router = useRouter();
   const { user, loading: authLoading, logout } = useAuth();
   const { messages, loading: chatLoading, sendMessage, sendMessageWithFile, appendVoiceTranscript } = useChat();
-  const { status, transcripts, isActive, startSession, endSession } = useVoiceSession();
+  const { status, transcripts, isActive, startSession, endSession, sendText } = useVoiceSession();
+  const voiceFileRef = useRef<HTMLInputElement>(null);
+
+  const handleVoiceFileSelect = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    const file = files[0];
+    if (voiceFileRef.current) voiceFileRef.current.value = "";
+    const result = await sendMessageWithFile("", file);
+    if (result && isActive) {
+      sendText(
+        `The user just uploaded a file called "${file.name}". ` +
+        `It has been analyzed and added to the knowledge base. ` +
+        `Here is the extracted content:\n\n${result.extracted_text}\n\n` +
+        `Acknowledge the upload and briefly describe what you see in it.`
+      );
+    }
+  };
 
   useEffect(() => {
     if (!authLoading && !isLoggedIn()) {
       router.replace("/login");
     }
   }, [authLoading, router]);
+
+  const handleFileProcessed = useCallback((file: File, result: UploadResponse) => {
+    if (isActive) {
+      sendText(
+        `The user just uploaded a file called "${file.name}". ` +
+        `It has been analyzed and added to the knowledge base. ` +
+        `Here is the extracted content:\n\n${result.extracted_text}\n\n` +
+        `Acknowledge the upload and briefly describe what you see in it.`
+      );
+    }
+  }, [isActive, sendText]);
 
   const handleStartVoice = async () => {
     try {
@@ -87,14 +114,45 @@ export default function ChatPage() {
         <ChatWindow
           messages={messages}
           loading={chatLoading}
+          isVoiceActive={isActive}
           onSend={sendMessage}
           onSendWithFile={sendMessageWithFile}
+          onFileProcessed={handleFileProcessed}
         />
 
         {/* Voice transcript overlay */}
         {isActive && (
           <div className="absolute bottom-20 left-4 right-4">
-            <TranscriptPanel transcripts={transcripts} />
+            <div className="flex items-end gap-2">
+              <div className="flex-1">
+                <TranscriptPanel transcripts={transcripts} />
+              </div>
+              <button
+                type="button"
+                onClick={() => voiceFileRef.current?.click()}
+                disabled={chatLoading}
+                className="shrink-0 w-12 h-12 rounded-full bg-white shadow-lg border border-gray-200 flex items-center justify-center text-gray-500 hover:text-blue-600 hover:border-blue-300 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                title="Upload image or document"
+              >
+                {chatLoading ? (
+                  <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                ) : (
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                  </svg>
+                )}
+              </button>
+              <input
+                ref={voiceFileRef}
+                type="file"
+                accept=".txt,.md,.pdf,.docx,.xlsx,.csv,.jpg,.jpeg,.png,.gif,.webp,.bmp,.tiff"
+                onChange={(e) => handleVoiceFileSelect(e.target.files)}
+                className="hidden"
+              />
+            </div>
           </div>
         )}
       </main>

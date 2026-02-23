@@ -1,23 +1,43 @@
 "use client";
 
 import { useRef, useEffect, useState, FormEvent, DragEvent } from "react";
-import { ChatMessage } from "@/hooks/useChat";
+import { ChatMessage, UploadResponse } from "@/hooks/useChat";
 import MessageBubble from "./MessageBubble";
 
-const ACCEPTED_EXTENSIONS = ".txt,.md,.pdf,.docx,.xlsx,.csv";
+const ACCEPTED_EXTENSIONS =
+  ".txt,.md,.pdf,.docx,.xlsx,.csv,.jpg,.jpeg,.png,.gif,.webp,.bmp,.tiff";
+
+const IMAGE_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+  "image/bmp",
+  "image/tiff",
+]);
+
+function isImageFile(file: File): boolean {
+  if (IMAGE_TYPES.has(file.type)) return true;
+  const ext = file.name.slice(file.name.lastIndexOf(".")).toLowerCase();
+  return [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff"].includes(ext);
+}
 
 interface Props {
   messages: ChatMessage[];
   loading: boolean;
+  isVoiceActive?: boolean;
   onSend: (text: string) => void;
-  onSendWithFile: (text: string, file: File) => void;
+  onSendWithFile: (text: string, file: File) => Promise<UploadResponse | null>;
+  onFileProcessed?: (file: File, result: UploadResponse) => void;
 }
 
 export default function ChatWindow({
   messages,
   loading,
+  isVoiceActive = false,
   onSend,
   onSendWithFile,
+  onFileProcessed,
 }: Props) {
   const [input, setInput] = useState("");
   const [stagedFile, setStagedFile] = useState<File | null>(null);
@@ -29,6 +49,17 @@ export default function ChatWindow({
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  // During voice mode, auto-submit staged files immediately
+  useEffect(() => {
+    if (isVoiceActive && stagedFile && !loading) {
+      const file = stagedFile;
+      setStagedFile(null);
+      onSendWithFile("", file).then((result) => {
+        if (result && onFileProcessed) onFileProcessed(file, result);
+      });
+    }
+  }, [isVoiceActive, stagedFile, loading, onSendWithFile, onFileProcessed]);
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
@@ -112,7 +143,7 @@ export default function ChatWindow({
             </svg>
             <p className="text-blue-600 font-medium">Drop file to upload</p>
             <p className="text-blue-400 text-sm mt-1">
-              PDF, DOCX, TXT, MD, XLSX, CSV
+              PDF, DOCX, TXT, MD, XLSX, CSV, JPG, PNG, GIF, WEBP
             </p>
           </div>
         </div>
@@ -146,19 +177,29 @@ export default function ChatWindow({
       {stagedFile && (
         <div className="border-t border-gray-200 px-4 py-2 bg-gray-50">
           <div className="flex items-center gap-2 text-sm">
-            <svg
-              className="w-4 h-4 text-gray-500 shrink-0"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+            {isImageFile(stagedFile) ? (
+              /* eslint-disable-next-line @next/next/no-img-element */
+              <img
+                src={URL.createObjectURL(stagedFile)}
+                alt="Preview"
+                className="w-10 h-10 rounded object-cover shrink-0"
+                onLoad={(e) => URL.revokeObjectURL((e.target as HTMLImageElement).src)}
               />
-            </svg>
+            ) : (
+              <svg
+                className="w-4 h-4 text-gray-500 shrink-0"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                />
+              </svg>
+            )}
             <span className="text-gray-700 truncate">{stagedFile.name}</span>
             <span className="text-gray-400 shrink-0">
               ({(stagedFile.size / 1024).toFixed(0)} KB)

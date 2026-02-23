@@ -26,6 +26,7 @@ router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 
 class SettingsOut(BaseModel):
+    agent_name: str
     omnia_voice_name: str
     omnia_language_code: str
     llm_model: str
@@ -34,6 +35,7 @@ class SettingsOut(BaseModel):
 
 
 class SettingsPatch(BaseModel):
+    agent_name: Optional[str] = Field(None, min_length=1, max_length=100)
     omnia_voice_name: Optional[str] = Field(None, max_length=100)
     omnia_language_code: Optional[str] = Field(None, max_length=10)
     llm_model: Optional[str] = Field(None, max_length=100)
@@ -62,13 +64,7 @@ async def get_settings(
 ):
     """Return the current user's settings."""
     user_settings = await get_or_create_settings(db, user_id)
-    return SettingsOut(
-        omnia_voice_name=user_settings.omnia_voice_name,
-        omnia_language_code=user_settings.omnia_language_code,
-        llm_model=user_settings.llm_model,
-        llm_temperature=user_settings.llm_temperature,
-        llm_max_tokens=user_settings.llm_max_tokens,
-    )
+    return _to_out(user_settings)
 
 
 @router.patch("", response_model=SettingsOut)
@@ -90,7 +86,12 @@ async def update_settings(
     await db.commit()
     await db.refresh(user_settings)
 
+    return _to_out(user_settings)
+
+
+def _to_out(user_settings: UserSettings) -> SettingsOut:
     return SettingsOut(
+        agent_name=user_settings.agent_name,
         omnia_voice_name=user_settings.omnia_voice_name,
         omnia_language_code=user_settings.omnia_language_code,
         llm_model=user_settings.llm_model,

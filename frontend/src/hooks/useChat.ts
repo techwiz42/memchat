@@ -11,10 +11,11 @@ export interface ChatMessage {
   created_at: string;
 }
 
-interface UploadResponse {
+export interface UploadResponse {
   response: string;
   filename: string;
   chunks: number;
+  extracted_text: string;
 }
 
 export function useChat() {
@@ -75,7 +76,7 @@ export function useChat() {
   }, []);
 
   const sendMessageWithFile = useCallback(
-    async (text: string, file: File) => {
+    async (text: string, file: File): Promise<UploadResponse | null> => {
       const userMsg: ChatMessage = {
         id: crypto.randomUUID(),
         role: "user",
@@ -108,6 +109,7 @@ export function useChat() {
           created_at: new Date().toISOString(),
         };
         setMessages((prev) => [...prev, assistantMsg]);
+        return data;
       } catch (e) {
         console.error("Upload error:", e);
         const errorMsg: ChatMessage = {
@@ -121,6 +123,7 @@ export function useChat() {
           created_at: new Date().toISOString(),
         };
         setMessages((prev) => [...prev, errorMsg]);
+        return null;
       } finally {
         setLoading(false);
       }

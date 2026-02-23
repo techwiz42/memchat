@@ -6,6 +6,7 @@ import { isLoggedIn } from "@/lib/auth";
 import { apiFetch } from "@/lib/api";
 
 interface Settings {
+  agent_name: string;
   omnia_voice_name: string;
   omnia_language_code: string;
   llm_model: string;
@@ -22,23 +23,42 @@ interface Voice {
 
 const LANGUAGES = [
   { code: "en", label: "English" },
+  { code: "ar", label: "Arabic" },
+  { code: "bg", label: "Bulgarian" },
+  { code: "cs", label: "Czech" },
+  { code: "da", label: "Danish" },
   { code: "de", label: "German" },
+  { code: "el", label: "Greek" },
   { code: "es", label: "Spanish" },
+  { code: "fi", label: "Finnish" },
   { code: "fr", label: "French" },
+  { code: "he", label: "Hebrew" },
   { code: "hi", label: "Hindi" },
+  { code: "hr", label: "Croatian" },
+  { code: "hu", label: "Hungarian" },
+  { code: "id", label: "Indonesian" },
   { code: "it", label: "Italian" },
   { code: "ja", label: "Japanese" },
   { code: "ko", label: "Korean" },
+  { code: "ms", label: "Malay" },
   { code: "nl", label: "Dutch" },
+  { code: "no", label: "Norwegian" },
   { code: "pl", label: "Polish" },
   { code: "pt", label: "Portuguese" },
+  { code: "ro", label: "Romanian" },
   { code: "ru", label: "Russian" },
+  { code: "sk", label: "Slovak" },
   { code: "sv", label: "Swedish" },
+  { code: "th", label: "Thai" },
   { code: "tr", label: "Turkish" },
+  { code: "uk", label: "Ukrainian" },
+  { code: "vi", label: "Vietnamese" },
   { code: "zh", label: "Chinese" },
 ];
 
 const LLM_MODELS = [
+  { value: "gpt-5", label: "GPT-5" },
+  { value: "gpt-5-mini", label: "GPT-5 Mini" },
   { value: "gpt-4o", label: "GPT-4o" },
   { value: "gpt-4o-mini", label: "GPT-4o Mini" },
   { value: "gpt-4-turbo", label: "GPT-4 Turbo" },
@@ -53,6 +73,7 @@ export default function SettingsPage() {
   const [success, setSuccess] = useState(false);
 
   const [settings, setSettings] = useState<Settings>({
+    agent_name: "Assistant",
     omnia_voice_name: "Mark",
     omnia_language_code: "en",
     llm_model: "gpt-4o",
@@ -108,6 +129,7 @@ export default function SettingsPage() {
 
     try {
       const patch: Record<string, any> = {
+        agent_name: settings.agent_name,
         omnia_voice_name: settings.omnia_voice_name,
         omnia_language_code: settings.omnia_language_code,
         llm_model: settings.llm_model,
@@ -152,6 +174,29 @@ export default function SettingsPage() {
 
       <div className="max-w-lg mx-auto py-8 px-4">
         <form onSubmit={handleSave} className="space-y-8">
+          {/* Agent Identity */}
+          <section>
+            <h2 className="text-base font-semibold text-gray-900 mb-4">Agent Identity</h2>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Agent Name
+              </label>
+              <input
+                type="text"
+                value={settings.agent_name}
+                onChange={(e) =>
+                  setSettings((s) => ({ ...s, agent_name: e.target.value }))
+                }
+                placeholder="Assistant"
+                maxLength={100}
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <p className="text-xs text-gray-400 mt-1">
+                The agent will introduce itself and refer to itself by this name.
+              </p>
+            </div>
+          </section>
+
           {/* Voice Settings */}
           <section>
             <h2 className="text-base font-semibold text-gray-900 mb-4">Voice Settings</h2>

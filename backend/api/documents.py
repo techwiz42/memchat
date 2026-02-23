@@ -8,7 +8,9 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth.jwt import get_current_user_id
-from document.parser import extract_text, ALLOWED_EXTENSIONS
+from config import settings
+from document.parser import extract_text, ALLOWED_EXTENSIONS, IMAGE_EXTENSIONS
+from document.vision import analyze_image
 from document.chunker import chunk_text
 from memory.embeddings import embed_text
 from memory.vector_store import store_embedding
@@ -25,6 +27,7 @@ class UploadResponse(BaseModel):
     response: str
     filename: str
     chunks: int
+    extracted_text: str
 
 
 @router.post("/upload", response_model=UploadResponse)
@@ -56,9 +59,12 @@ async def upload_document(
     if len(content) == 0:
         raise HTTPException(status_code=400, detail="File is empty.")
 
-    # Extract text
+    # Extract text (or analyze image)
     try:
-        extracted = await extract_text(filename, content)
+        if ext in IMAGE_EXTENSIONS:
+            extracted = await analyze_image(filename, content, settings.llm_api_key)
+        else:
+            extracted = await extract_text(filename, content)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -115,6 +121,7 @@ async def upload_document(
         response=confirmation,
         filename=filename,
         chunks=len(chunks),
+        extracted_text=extracted,
     )
 
 

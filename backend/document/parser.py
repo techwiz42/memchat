@@ -7,7 +7,9 @@ import pdfplumber
 from docx import Document as DocxDocument
 from openpyxl import load_workbook
 
-ALLOWED_EXTENSIONS = {".txt", ".md", ".pdf", ".docx", ".xlsx", ".csv"}
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff", ".tif"}
+
+ALLOWED_EXTENSIONS = {".txt", ".md", ".pdf", ".docx", ".xlsx", ".csv"} | IMAGE_EXTENSIONS
 
 
 async def extract_text(filename: str, content: bytes) -> str:

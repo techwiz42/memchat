@@ -21,7 +21,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are a helpful personal assistant having a voice conversation with the user.
+SYSTEM_PROMPT_TEMPLATE = """Your name is {agent_name}. Always refer to yourself as {agent_name} when asked your name or when introducing yourself.
+
+You are a helpful personal assistant having a voice conversation with the user.
 You have access to the user's personal knowledge base through the rag_query tool. Use it when:
 - The user asks about something they may have previously told you
 - The user references past conversations, notes, or stored information
@@ -136,14 +138,16 @@ def build_tool_definitions(base_url: str, session_token: str, user_id: str) -> l
     return [rag_query_tool, store_memory_tool]
 
 
-def _build_context_prompt(recent_messages: list[Message]) -> str:
+def _build_context_prompt(recent_messages: list[Message], agent_name: str = "Assistant") -> str:
     """Build the system prompt, injecting recent conversation context if available."""
+    base = SYSTEM_PROMPT_TEMPLATE.format(agent_name=agent_name)
+
     if not recent_messages:
-        return SYSTEM_PROMPT
+        return base
 
     lines = []
     for msg in recent_messages:
-        prefix = "User" if msg.role == "user" else "Assistant"
+        prefix = "User" if msg.role == "user" else agent_name
         # Truncate long messages to keep prompt reasonable
         content = msg.content[:500]
         lines.append(f"{prefix}: {content}")
@@ -151,7 +155,7 @@ def _build_context_prompt(recent_messages: list[Message]) -> str:
     context_block = "\n".join(lines)
 
     return (
-        f"{SYSTEM_PROMPT}\n\n"
+        f"{base}\n\n"
         f"--- Recent conversation context (text chat) ---\n"
         f"The user was just chatting via text before switching to voice. "
         f"Here is their recent conversation for continuity:\n\n"
@@ -166,6 +170,7 @@ def build_inline_call_config(
     user_id: str,
     recent_messages: list[Message] | None = None,
     *,
+    agent_name: str | None = None,
     voice_name: str | None = None,
     language_code: str | None = None,
 ) -> dict[str, Any]:
@@ -175,23 +180,25 @@ def build_inline_call_config(
         session_token: Voice session token for tool callback auth.
         user_id: User ID string.
         recent_messages: Recent conversation messages for continuity across modes.
+        agent_name: Per-user agent name. Falls back to "Assistant".
         voice_name: Per-user voice override. Falls back to global settings.
         language_code: Per-user language override. Falls back to global settings.
 
     Returns:
         Omnia inline call configuration dict ready for create_inline_call().
     """
+    name = agent_name or "Assistant"
     base_url = settings.public_base_url.rstrip("/")
 
     tool_definitions = build_tool_definitions(base_url, session_token, user_id)
-    system_prompt = _build_context_prompt(recent_messages or [])
+    system_prompt = _build_context_prompt(recent_messages or [], agent_name=name)
 
     return {
         "systemPrompt": system_prompt,
         "model": settings.llm_model,
         "voice": voice_name or settings.omnia_voice_name,
         "language": language_code or settings.omnia_language_code,
-        "greeting": "Hey there! How can I help you today?",
+        "greeting": f"Hey there! It's {name}. How can I help you today?",
         "firstSpeaker": "agent",
         "temperature": 0.7,
         "maxDuration": 1800,
