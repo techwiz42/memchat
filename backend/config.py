@@ -66,6 +66,8 @@ class Settings:
         self._llm_api_key: str | None = None
         self._embedding_api_key: str | None = None
         self._app_secret_key: str | None = None
+        self._google_client_id: str | None = None
+        self._google_client_secret: str | None = None
 
         # Public config
         self.public_base_url = os.environ.get("PUBLIC_BASE_URL", "http://localhost:8000")
@@ -115,6 +117,25 @@ class Settings:
         if self._app_secret_key is None:
             self._app_secret_key = _read_secret("APP_SECRET_KEY")
         return self._app_secret_key
+
+    @property
+    def google_client_id(self) -> str:
+        if self._google_client_id is None:
+            self._google_client_id = _read_secret("GOOGLE_CLIENT_ID")
+        return self._google_client_id
+
+    @property
+    def google_client_secret(self) -> str:
+        if self._google_client_secret is None:
+            self._google_client_secret = _read_secret("GOOGLE_CLIENT_SECRET")
+        return self._google_client_secret
+
+    @property
+    def google_redirect_uri(self) -> str:
+        return os.environ.get(
+            "GOOGLE_REDIRECT_URI",
+            f"{self.public_base_url}/api/auth/google/callback",
+        )
 
 
 settings = Settings()

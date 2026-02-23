@@ -1,5 +1,6 @@
 "use client";
 
+import ReactMarkdown from "react-markdown";
 import { ChatMessage } from "@/hooks/useChat";
 
 interface Props {
@@ -50,7 +51,13 @@ export default function MessageBubble({ message }: Props) {
           </div>
         )}
         {textContent && (
-          <p className="whitespace-pre-wrap text-sm">{textContent}</p>
+          isUser ? (
+            <p className="whitespace-pre-wrap text-sm">{textContent}</p>
+          ) : (
+            <div className="prose prose-sm max-w-none prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-headings:my-2 prose-pre:my-2 prose-code:text-inherit prose-code:before:content-none prose-code:after:content-none">
+              <ReactMarkdown>{textContent}</ReactMarkdown>
+            </div>
+          )
         )}
         <div
           className={`flex items-center gap-2 mt-1 text-xs ${

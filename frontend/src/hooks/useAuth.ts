@@ -7,6 +7,9 @@ import { setTokens, clearTokens, isLoggedIn } from "@/lib/auth";
 interface User {
   id: string;
   email: string;
+  display_name: string | null;
+  avatar_url: string | null;
+  has_password: boolean;
 }
 
 export function useAuth() {

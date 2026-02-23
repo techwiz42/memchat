@@ -98,6 +98,9 @@ export function useVoiceSession() {
     const session = sessionRef.current;
     const callId = callIdRef.current;
 
+    // Capture current transcripts before teardown
+    const localTranscripts = [...transcripts];
+
     if (session) {
       setStatus("disconnecting");
       await session.leaveCall();
@@ -108,13 +111,22 @@ export function useVoiceSession() {
     setStatus("idle");
 
     if (callId) {
+      // Build a text transcript from the locally-captured stream as fallback
+      const clientTranscript = localTranscripts
+        .filter((t) => t.isFinal)
+        .map((t) => `${t.speaker === "user" ? "User" : "Agent"}: ${t.text}`)
+        .join("\n");
+
       try {
         const data = await apiFetch<{
           transcript: string | null;
           summary: string | null;
         }>("/voice/end", {
           method: "POST",
-          body: JSON.stringify({ call_id: callId }),
+          body: JSON.stringify({
+            call_id: callId,
+            client_transcript: clientTranscript || null,
+          }),
         });
         callIdRef.current = null;
         return data.transcript;
@@ -125,7 +137,7 @@ export function useVoiceSession() {
 
     callIdRef.current = null;
     return null;
-  }, []);
+  }, [transcripts]);
 
   return {
     status,

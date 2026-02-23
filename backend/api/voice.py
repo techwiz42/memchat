@@ -19,6 +19,7 @@ from config import settings
 from memory.embeddings import embed_text
 from memory.vector_store import store_embedding
 from models import VoiceSession, VoiceSessionStatus, Message, MessageSource, get_db
+from api.settings import get_or_create_settings
 from voice.omnia_client import OmniaVoiceClient, OmniaAPIError
 from voice.omnia_config import build_inline_call_config
 from voice.session_manager import create_session, end_session, end_session_by_user
@@ -35,6 +36,7 @@ class StartVoiceResponse(BaseModel):
 
 class EndVoiceRequest(BaseModel):
     call_id: str
+    client_transcript: str | None = None
 
 
 class EndVoiceResponse(BaseModel):
@@ -61,11 +63,20 @@ async def start_voice_session(
     )
     recent_messages = list(reversed(recent.scalars().all()))
 
+    # Load per-user voice settings
+    user_settings = await get_or_create_settings(db, user_id)
+
     # Create session token for tool callback auth
     session_token = await create_session(user_id)
 
-    # Build inline call config with recent context
-    call_config = build_inline_call_config(session_token, str(user_id), recent_messages)
+    # Build inline call config with recent context and per-user voice/language
+    call_config = build_inline_call_config(
+        session_token,
+        str(user_id),
+        recent_messages,
+        voice_name=user_settings.omnia_voice_name,
+        language_code=user_settings.omnia_language_code,
+    )
 
     # Create call via Omnia API
     client = OmniaVoiceClient(api_key=settings.omnia_api_key)
@@ -127,6 +138,11 @@ async def end_voice_session(
 
     transcript = call_data.get("transcript")
     summary = call_data.get("summary")
+
+    # Fall back to client-captured transcript if Omnia didn't return one
+    if not transcript and body.client_transcript:
+        logger.info("Using client-provided transcript (Omnia returned none)")
+        transcript = body.client_transcript
 
     # Update voice session record
     voice_session.status = VoiceSessionStatus.ENDED

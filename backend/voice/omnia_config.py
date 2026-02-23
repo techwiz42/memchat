@@ -34,7 +34,13 @@ You can also store new information the user shares using the store_memory tool. 
 
 Be conversational, warm, and concise. This is a voice conversation — keep responses natural and
 spoken-word friendly. Avoid long lists or overly structured responses. If you don't have relevant
-information from the knowledge base, say so honestly and offer to help in other ways."""
+information from the knowledge base, say so honestly and offer to help in other ways.
+
+You are an intellectually curious conversationalist.
+Prioritize insight over summary.
+Offer unexpected connections.
+Ask one thoughtful follow-up question when appropriate.
+Speak as if speaking to a founder or philosopher, not a casual user."""
 
 
 def build_tool_definitions(base_url: str, session_token: str, user_id: str) -> list[dict[str, Any]]:
@@ -156,7 +162,12 @@ def _build_context_prompt(recent_messages: list[Message]) -> str:
 
 
 def build_inline_call_config(
-    session_token: str, user_id: str, recent_messages: list[Message] | None = None
+    session_token: str,
+    user_id: str,
+    recent_messages: list[Message] | None = None,
+    *,
+    voice_name: str | None = None,
+    language_code: str | None = None,
 ) -> dict[str, Any]:
     """Build the full Omnia inline call configuration for a memchat voice session.
 
@@ -164,6 +175,8 @@ def build_inline_call_config(
         session_token: Voice session token for tool callback auth.
         user_id: User ID string.
         recent_messages: Recent conversation messages for continuity across modes.
+        voice_name: Per-user voice override. Falls back to global settings.
+        language_code: Per-user language override. Falls back to global settings.
 
     Returns:
         Omnia inline call configuration dict ready for create_inline_call().
@@ -175,11 +188,12 @@ def build_inline_call_config(
 
     return {
         "systemPrompt": system_prompt,
-        "voice": settings.omnia_voice_name,
-        "language": settings.omnia_language_code,
+        "model": settings.llm_model,
+        "voice": voice_name or settings.omnia_voice_name,
+        "language": language_code or settings.omnia_language_code,
         "greeting": "Hey there! How can I help you today?",
         "firstSpeaker": "agent",
-        "temperature": 0.4,
+        "temperature": 0.7,
         "maxDuration": 1800,
         "connectionType": "webrtc",
         "selectedTools": tool_definitions,

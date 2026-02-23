@@ -15,6 +15,7 @@ from memory.embeddings import embed_text
 from memory.rag import retrieve_context
 from memory.vector_store import store_embedding
 from models import Message, MessageSource, get_db
+from api.settings import get_or_create_settings
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,13 @@ class MessageOut(BaseModel):
 
 SYSTEM_PROMPT = """You are a helpful personal assistant with access to the user's stored memories and knowledge.
 When relevant context from the user's memory is provided, use it to give personalized, informed responses.
-Be conversational, helpful, and concise. If you don't have relevant information in the provided context, say so honestly."""
+If you don't have relevant information in the provided context, say so honestly.
+
+You are an intellectually curious conversationalist.
+Prioritize insight over summary.
+Offer unexpected connections.
+Ask one thoughtful follow-up question when appropriate.
+Write as if speaking to a founder or philosopher, not a casual user."""
 
 
 @router.post("", response_model=ChatResponse)
@@ -82,12 +89,19 @@ async def chat(
 
     messages.append({"role": "user", "content": body.message})
 
+    # Load per-user LLM settings
+    user_settings = await get_or_create_settings(db, user_id)
+
     # Call LLM
     client = _get_llm_client()
-    completion = await client.chat.completions.create(
-        model=settings.llm_model,
-        messages=messages,
-    )
+    llm_kwargs: dict = {
+        "model": user_settings.llm_model,
+        "messages": messages,
+        "temperature": user_settings.llm_temperature,
+    }
+    if user_settings.llm_max_tokens is not None:
+        llm_kwargs["max_tokens"] = user_settings.llm_max_tokens
+    completion = await client.chat.completions.create(**llm_kwargs)
     assistant_content = completion.choices[0].message.content
 
     # Store both messages in conversation history
