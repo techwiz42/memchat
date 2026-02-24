@@ -7,25 +7,9 @@ import MessageBubble from "./MessageBubble";
 const ACCEPTED_EXTENSIONS =
   ".txt,.md,.pdf,.docx,.xlsx,.csv,.fdx,.jpg,.jpeg,.png,.gif,.webp,.bmp,.tiff";
 
-const IMAGE_TYPES = new Set([
-  "image/jpeg",
-  "image/png",
-  "image/gif",
-  "image/webp",
-  "image/bmp",
-  "image/tiff",
-]);
-
-function isImageFile(file: File): boolean {
-  if (IMAGE_TYPES.has(file.type)) return true;
-  const ext = file.name.slice(file.name.lastIndexOf(".")).toLowerCase();
-  return [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff"].includes(ext);
-}
-
 interface Props {
   messages: ChatMessage[];
   loading: boolean;
-  isVoiceActive?: boolean;
   onSend: (text: string) => void;
   onSendWithFile: (text: string, file: File) => Promise<UploadResponse | null>;
   onFileProcessed?: (file: File, result: UploadResponse) => void;
@@ -34,13 +18,11 @@ interface Props {
 export default function ChatWindow({
   messages,
   loading,
-  isVoiceActive = false,
   onSend,
   onSendWithFile,
   onFileProcessed,
 }: Props) {
   const [input, setInput] = useState("");
-  const [stagedFile, setStagedFile] = useState<File | null>(null);
   const [dragging, setDragging] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -50,35 +32,20 @@ export default function ChatWindow({
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // During voice mode, auto-submit staged files immediately
-  useEffect(() => {
-    if (isVoiceActive && stagedFile && !loading) {
-      const file = stagedFile;
-      setStagedFile(null);
-      onSendWithFile("", file).then((result) => {
-        if (result && onFileProcessed) onFileProcessed(file, result);
-      });
-    }
-  }, [isVoiceActive, stagedFile, loading, onSendWithFile, onFileProcessed]);
-
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
     const text = input.trim();
-    if (loading) return;
-
-    if (stagedFile) {
-      onSendWithFile(text, stagedFile);
-      setStagedFile(null);
-      setInput("");
-    } else if (text) {
-      onSend(text);
-      setInput("");
-    }
+    if (loading || !text) return;
+    onSend(text);
+    setInput("");
   };
 
   const handleFileSelect = (files: FileList | null) => {
-    if (!files || files.length === 0) return;
-    setStagedFile(files[0]);
+    if (!files || files.length === 0 || loading) return;
+    const file = files[0];
+    onSendWithFile("", file).then((result) => {
+      if (result && onFileProcessed) onFileProcessed(file, result);
+    });
   };
 
   const handleDragEnter = (e: DragEvent) => {
@@ -111,8 +78,11 @@ export default function ChatWindow({
     setDragging(false);
 
     const files = e.dataTransfer.files;
-    if (files.length > 0) {
-      setStagedFile(files[0]);
+    if (files.length > 0 && !loading) {
+      const file = files[0];
+      onSendWithFile("", file).then((result) => {
+        if (result && onFileProcessed) onFileProcessed(file, result);
+      });
     }
   };
 
@@ -173,54 +143,6 @@ export default function ChatWindow({
         <div ref={bottomRef} />
       </div>
 
-      {/* File preview strip */}
-      {stagedFile && (
-        <div className="border-t border-gray-200 px-4 py-2 bg-gray-50">
-          <div className="flex items-center gap-2 text-sm">
-            {isImageFile(stagedFile) ? (
-              /* eslint-disable-next-line @next/next/no-img-element */
-              <img
-                src={URL.createObjectURL(stagedFile)}
-                alt="Preview"
-                className="w-10 h-10 rounded object-cover shrink-0"
-                onLoad={(e) => URL.revokeObjectURL((e.target as HTMLImageElement).src)}
-              />
-            ) : (
-              <svg
-                className="w-4 h-4 text-gray-500 shrink-0"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-                />
-              </svg>
-            )}
-            <span className="text-gray-700 truncate">{stagedFile.name}</span>
-            <span className="text-gray-400 shrink-0">
-              ({(stagedFile.size / 1024).toFixed(0)} KB)
-            </span>
-            <button
-              type="button"
-              onClick={() => setStagedFile(null)}
-              className="ml-auto text-gray-400 hover:text-gray-600 shrink-0"
-            >
-              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                <path
-                  fillRule="evenodd"
-                  d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
-                  clipRule="evenodd"
-                />
-              </svg>
-            </button>
-          </div>
-        </div>
-      )}
-
       {/* Input area */}
       <form onSubmit={handleSubmit} className="border-t border-gray-200 p-4">
         <div className="flex gap-2">
@@ -258,15 +180,13 @@ export default function ChatWindow({
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder={
-              stagedFile ? "Add a message (optional)..." : "Type a message..."
-            }
+            placeholder="Type a message..."
             className="flex-1 rounded-xl border border-gray-300 px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             disabled={loading}
           />
           <button
             type="submit"
-            disabled={loading || (!input.trim() && !stagedFile)}
+            disabled={loading || !input.trim()}
             className="bg-blue-600 text-white rounded-xl px-5 py-2.5 text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             Send

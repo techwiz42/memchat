@@ -153,8 +153,7 @@ async def upload_document(
         f"I've processed your document **{filename}** and added it to your knowledge base. "
         f"It was split into {len(chunks)} chunk{'s' if len(chunks) != 1 else ''} "
         f"for retrieval. You can ask me questions about its content, or ask me to "
-        f"edit/revise it and I'll provide the updated document as a download.\n\n"
-        f"[Download {filename}]({download_url})"
+        f"edit/revise it and I'll provide the updated document as a download."
     )
 
     assistant_msg = Message(

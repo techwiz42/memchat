@@ -215,7 +215,6 @@ export default function ChatPage() {
           <ChatWindow
             messages={messages}
             loading={chatLoading}
-            isVoiceActive={isActive}
             onSend={sendMessage}
             onSendWithFile={sendMessageWithFile}
             onFileProcessed={handleFileProcessed}
