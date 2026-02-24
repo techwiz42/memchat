@@ -6,9 +6,11 @@ import Link from "next/link";
 import { isLoggedIn } from "@/lib/auth";
 import { useAuth } from "@/hooks/useAuth";
 import { useChat, UploadResponse } from "@/hooks/useChat";
+import { useConversations } from "@/hooks/useConversations";
 import { useVoiceSession } from "@/hooks/useVoiceSession";
 import { useVideoStream } from "@/hooks/useVideoStream";
 import ChatWindow from "@/components/ChatWindow";
+import ChatSidebar from "@/components/ChatSidebar";
 import VoiceButton from "@/components/VoiceButton";
 import VoiceStatus from "@/components/VoiceStatus";
 import TranscriptPanel from "@/components/TranscriptPanel";
@@ -18,7 +20,19 @@ import VideoPreview from "@/components/VideoPreview";
 export default function ChatPage() {
   const router = useRouter();
   const { user, loading: authLoading, logout } = useAuth();
-  const { messages, loading: chatLoading, sendMessage, sendMessageWithFile, appendVoiceTranscript, appendVisionAnalysis } = useChat();
+  const {
+    messages,
+    loading: chatLoading,
+    conversationId,
+    sendMessage,
+    sendMessageWithFile,
+    appendVoiceTranscript,
+    appendVisionAnalysis,
+    newConversation,
+    selectConversation,
+    setOnConversationCreated,
+  } = useChat();
+  const { conversations, loadConversations, deleteConversation } = useConversations();
   const { status, transcripts, isActive, startSession, endSession, sendText } = useVoiceSession();
   const {
     status: cameraStatus,
@@ -31,6 +45,20 @@ export default function ChatPage() {
     onAnalysis: (content) => appendVisionAnalysis(content),
   });
   const voiceFileRef = useRef<HTMLInputElement>(null);
+
+  // Load conversations on mount
+  useEffect(() => {
+    if (!authLoading && isLoggedIn()) {
+      loadConversations();
+    }
+  }, [authLoading, loadConversations]);
+
+  // Register callback so new conversations refresh the sidebar
+  useEffect(() => {
+    setOnConversationCreated(() => {
+      loadConversations();
+    });
+  }, [setOnConversationCreated, loadConversations]);
 
   const handleVoiceFileSelect = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
@@ -91,6 +119,22 @@ export default function ChatPage() {
     }
   };
 
+  const handleNewChat = useCallback(() => {
+    newConversation();
+  }, [newConversation]);
+
+  const handleSelectConversation = useCallback((id: string) => {
+    selectConversation(id);
+  }, [selectConversation]);
+
+  const handleDeleteConversation = useCallback(async (id: string) => {
+    await deleteConversation(id);
+    // If we deleted the active conversation, clear the canvas
+    if (id === conversationId) {
+      newConversation();
+    }
+  }, [deleteConversation, conversationId, newConversation]);
+
   if (authLoading) {
     return (
       <div className="flex items-center justify-center h-screen">
@@ -140,56 +184,67 @@ export default function ChatPage() {
         </div>
       </header>
 
-      {/* Chat area */}
-      <main className="flex-1 overflow-hidden relative">
-        {mediaStream && cameraStatus !== "idle" && (
-          <VideoPreview mediaStream={mediaStream} detections={detections} />
-        )}
-        <ChatWindow
-          messages={messages}
-          loading={chatLoading}
-          isVoiceActive={isActive}
-          onSend={sendMessage}
-          onSendWithFile={sendMessageWithFile}
-          onFileProcessed={handleFileProcessed}
+      {/* Main area: sidebar + chat */}
+      <div className="flex flex-1 overflow-hidden">
+        <ChatSidebar
+          conversations={conversations}
+          activeId={conversationId}
+          onNewChat={handleNewChat}
+          onSelect={handleSelectConversation}
+          onDelete={handleDeleteConversation}
         />
 
-        {/* Voice transcript overlay */}
-        {isActive && (
-          <div className="absolute bottom-20 left-4 right-4">
-            <div className="flex items-end gap-2">
-              <div className="flex-1">
-                <TranscriptPanel transcripts={transcripts} />
+        {/* Chat area */}
+        <main className="flex-1 overflow-hidden relative">
+          {mediaStream && cameraStatus !== "idle" && (
+            <VideoPreview mediaStream={mediaStream} detections={detections} />
+          )}
+          <ChatWindow
+            messages={messages}
+            loading={chatLoading}
+            isVoiceActive={isActive}
+            onSend={sendMessage}
+            onSendWithFile={sendMessageWithFile}
+            onFileProcessed={handleFileProcessed}
+          />
+
+          {/* Voice transcript overlay */}
+          {isActive && (
+            <div className="absolute bottom-20 left-4 right-4">
+              <div className="flex items-end gap-2">
+                <div className="flex-1">
+                  <TranscriptPanel transcripts={transcripts} />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => voiceFileRef.current?.click()}
+                  disabled={chatLoading}
+                  className="shrink-0 w-12 h-12 rounded-full bg-white shadow-lg border border-gray-200 flex items-center justify-center text-gray-500 hover:text-blue-600 hover:border-blue-300 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  title="Upload image or document"
+                >
+                  {chatLoading ? (
+                    <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                  ) : (
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                    </svg>
+                  )}
+                </button>
+                <input
+                  ref={voiceFileRef}
+                  type="file"
+                  accept=".txt,.md,.pdf,.docx,.xlsx,.csv,.jpg,.jpeg,.png,.gif,.webp,.bmp,.tiff"
+                  onChange={(e) => handleVoiceFileSelect(e.target.files)}
+                  className="hidden"
+                />
               </div>
-              <button
-                type="button"
-                onClick={() => voiceFileRef.current?.click()}
-                disabled={chatLoading}
-                className="shrink-0 w-12 h-12 rounded-full bg-white shadow-lg border border-gray-200 flex items-center justify-center text-gray-500 hover:text-blue-600 hover:border-blue-300 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                title="Upload image or document"
-              >
-                {chatLoading ? (
-                  <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                  </svg>
-                ) : (
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
-                  </svg>
-                )}
-              </button>
-              <input
-                ref={voiceFileRef}
-                type="file"
-                accept=".txt,.md,.pdf,.docx,.xlsx,.csv,.jpg,.jpeg,.png,.gif,.webp,.bmp,.tiff"
-                onChange={(e) => handleVoiceFileSelect(e.target.files)}
-                className="hidden"
-              />
             </div>
-          </div>
-        )}
-      </main>
+          )}
+        </main>
+      </div>
     </div>
   );
 }

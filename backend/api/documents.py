@@ -2,8 +2,10 @@
 
 import uuid
 import logging
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from sqlalchemy import select
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,7 +16,7 @@ from document.vision import analyze_image
 from document.chunker import chunk_text
 from memory.embeddings import embed_text
 from memory.vector_store import store_embedding
-from models import Message, MessageSource, get_db
+from models import Conversation, Message, MessageSource, get_db
 
 logger = logging.getLogger(__name__)
 
@@ -28,12 +30,14 @@ class UploadResponse(BaseModel):
     filename: str
     chunks: int
     extracted_text: str
+    conversation_id: str | None = None
 
 
 @router.post("/upload", response_model=UploadResponse)
 async def upload_document(
     file: UploadFile = File(...),
     message: str = Form(""),
+    conversation_id: str | None = Form(None),
     user_id: uuid.UUID = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ):
@@ -90,6 +94,22 @@ async def upload_document(
         embedding = await embed_text(chunk_label)
         await store_embedding(db, user_id, chunk_label, embedding)
 
+    # Resolve conversation
+    conv_id: uuid.UUID | None = None
+    if conversation_id:
+        try:
+            conv_id = uuid.UUID(conversation_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid conversation_id")
+        result = await db.execute(
+            select(Conversation).where(
+                Conversation.id == conv_id, Conversation.user_id == user_id
+            )
+        )
+        conversation = result.scalar_one_or_none()
+        if conversation:
+            conversation.updated_at = datetime.now(timezone.utc)
+
     # Store a user message recording the upload
     upload_note = f"[Uploaded document: {filename}]"
     user_msg = Message(
@@ -97,6 +117,7 @@ async def upload_document(
         role="user",
         content=upload_note,
         source=MessageSource.TEXT,
+        conversation_id=conv_id,
     )
     db.add(user_msg)
 
@@ -112,6 +133,7 @@ async def upload_document(
         role="assistant",
         content=confirmation,
         source=MessageSource.TEXT,
+        conversation_id=conv_id,
     )
     db.add(assistant_msg)
 
@@ -122,6 +144,7 @@ async def upload_document(
         filename=filename,
         chunks=len(chunks),
         extracted_text=extracted,
+        conversation_id=str(conv_id) if conv_id else None,
     )
 
 

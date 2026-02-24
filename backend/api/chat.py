@@ -3,6 +3,7 @@
 import json
 import uuid
 import logging
+from datetime import datetime, timezone
 
 import tiktoken
 from fastapi import APIRouter, Depends, HTTPException
@@ -16,7 +17,7 @@ from config import settings
 from memory.embeddings import embed_text
 from memory.rag import retrieve_context
 from memory.vector_store import store_embedding
-from models import Message, MessageSource, get_db
+from models import Conversation, Message, MessageSource, get_db
 from api.settings import get_or_create_settings
 from search.google_search import web_search
 from search.web_fetch import web_fetch
@@ -39,10 +40,12 @@ def _get_llm_client() -> AsyncOpenAI:
 
 class ChatRequest(BaseModel):
     message: str
+    conversation_id: str | None = None
 
 
 class ChatResponse(BaseModel):
     response: str
+    conversation_id: str
 
 
 class MessageOut(BaseModel):
@@ -126,6 +129,29 @@ async def chat(
     db: AsyncSession = Depends(get_db),
 ):
     """Send a text message and get a RAG-augmented LLM response."""
+    # Resolve or create conversation
+    conv_id: uuid.UUID | None = None
+    if body.conversation_id:
+        try:
+            conv_id = uuid.UUID(body.conversation_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid conversation_id")
+        result = await db.execute(
+            select(Conversation).where(
+                Conversation.id == conv_id, Conversation.user_id == user_id
+            )
+        )
+        conversation = result.scalar_one_or_none()
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+    else:
+        # Auto-create a new conversation titled from the first message
+        title = body.message[:100].strip() or "New Chat"
+        conversation = Conversation(user_id=user_id, title=title)
+        db.add(conversation)
+        await db.flush()
+        conv_id = conversation.id
+
     # Retrieve relevant context from user's memory
     context = await retrieve_context(db, user_id, body.message)
 
@@ -144,7 +170,7 @@ async def chat(
     # Fetch recent conversation history, trimmed to token budget
     recent = await db.execute(
         select(Message)
-        .where(Message.user_id == user_id)
+        .where(Message.user_id == user_id, Message.conversation_id == conv_id)
         .order_by(Message.created_at.desc())
         .limit(100)
     )
@@ -216,12 +242,19 @@ async def chat(
         assistant_content = "I'm sorry, I wasn't able to complete that request. Please try again."
 
     # Store both messages in conversation history
-    user_msg = Message(user_id=user_id, role="user", content=body.message, source=MessageSource.TEXT)
+    user_msg = Message(
+        user_id=user_id, role="user", content=body.message,
+        source=MessageSource.TEXT, conversation_id=conv_id,
+    )
     assistant_msg = Message(
-        user_id=user_id, role="assistant", content=assistant_content, source=MessageSource.TEXT
+        user_id=user_id, role="assistant", content=assistant_content,
+        source=MessageSource.TEXT, conversation_id=conv_id,
     )
     db.add(user_msg)
     db.add(assistant_msg)
+
+    # Bump conversation updated_at
+    conversation.updated_at = datetime.now(timezone.utc)
 
     # Embed the exchange for future RAG retrieval
     exchange_text = f"User: {body.message}\nAssistant: {assistant_content}"
@@ -230,21 +263,26 @@ async def chat(
 
     await db.commit()
 
-    return ChatResponse(response=assistant_content)
+    return ChatResponse(response=assistant_content, conversation_id=str(conv_id))
 
 
 @router.get("/history", response_model=list[MessageOut])
 async def get_history(
     limit: int = 50,
+    conversation_id: str | None = None,
     user_id: uuid.UUID = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get recent chat history."""
+    """Get recent chat history, optionally filtered by conversation."""
+    query = select(Message).where(Message.user_id == user_id)
+    if conversation_id:
+        try:
+            conv_uuid = uuid.UUID(conversation_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid conversation_id")
+        query = query.where(Message.conversation_id == conv_uuid)
     result = await db.execute(
-        select(Message)
-        .where(Message.user_id == user_id)
-        .order_by(Message.created_at.desc())
-        .limit(limit)
+        query.order_by(Message.created_at.desc()).limit(limit)
     )
     messages = list(reversed(result.scalars().all()))
     return [

@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from models.base import Base, async_engine
-from api import auth, chat, documents, settings, voice, voice_tools, vision_ws
+from api import auth, chat, conversations, documents, settings, voice, voice_tools, vision_ws
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -23,6 +23,7 @@ app.add_middleware(
 
 app.include_router(auth.router)
 app.include_router(chat.router)
+app.include_router(conversations.router)
 app.include_router(documents.router)
 app.include_router(settings.router)
 app.include_router(voice.router)
@@ -49,6 +50,17 @@ async def startup():
         await conn.execute(
             __import__("sqlalchemy").text(
                 "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS agent_name VARCHAR(100) DEFAULT 'Assistant'"
+            )
+        )
+        # Migrate: add conversation_id column to messages if it doesn't exist
+        await conn.execute(
+            __import__("sqlalchemy").text(
+                "ALTER TABLE messages ADD COLUMN IF NOT EXISTS conversation_id UUID REFERENCES conversations(id) ON DELETE CASCADE"
+            )
+        )
+        await conn.execute(
+            __import__("sqlalchemy").text(
+                "CREATE INDEX IF NOT EXISTS ix_messages_conversation_id ON messages (conversation_id)"
             )
         )
     logger.info("Database tables ready.")

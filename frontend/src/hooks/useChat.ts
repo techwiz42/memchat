@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { apiFetch, apiUpload } from "@/lib/api";
 
 export interface ChatMessage {
@@ -16,24 +16,34 @@ export interface UploadResponse {
   filename: string;
   chunks: number;
   extracted_text: string;
+  conversation_id?: string;
 }
 
 export function useChat() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  // Track callback so sidebar can be refreshed after new conversation is created
+  const onConversationCreatedRef = useRef<(() => void) | null>(null);
 
-  const loadHistory = useCallback(async () => {
+  const loadHistory = useCallback(async (convId?: string | null) => {
     try {
-      const data = await apiFetch<ChatMessage[]>("/chat/history?limit=50");
+      const target = convId ?? null;
+      let url = "/chat/history?limit=50";
+      if (target) {
+        url += `&conversation_id=${target}`;
+      }
+      const data = await apiFetch<ChatMessage[]>(url);
       setMessages(data);
     } catch (e) {
       console.error("Failed to load chat history:", e);
     }
   }, []);
 
+  // Load history on mount — no conversation selected means no filter (shows nothing for fresh start)
   useEffect(() => {
-    loadHistory();
-  }, [loadHistory]);
+    // Don't load all messages on mount — user should pick or create a conversation
+  }, []);
 
   const sendMessage = useCallback(async (text: string) => {
     const userMsg: ChatMessage = {
@@ -47,10 +57,16 @@ export function useChat() {
     setLoading(true);
 
     try {
-      const data = await apiFetch<{ response: string }>("/chat", {
+      const data = await apiFetch<{ response: string; conversation_id: string }>("/chat", {
         method: "POST",
-        body: JSON.stringify({ message: text }),
+        body: JSON.stringify({ message: text, conversation_id: conversationId }),
       });
+
+      // If a new conversation was created, store its id
+      if (!conversationId && data.conversation_id) {
+        setConversationId(data.conversation_id);
+        onConversationCreatedRef.current?.();
+      }
 
       const assistantMsg: ChatMessage = {
         id: crypto.randomUUID(),
@@ -73,7 +89,7 @@ export function useChat() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [conversationId]);
 
   const sendMessageWithFile = useCallback(
     async (text: string, file: File): Promise<UploadResponse | null> => {
@@ -95,11 +111,20 @@ export function useChat() {
         if (text) {
           formData.append("message", text);
         }
+        if (conversationId) {
+          formData.append("conversation_id", conversationId);
+        }
 
         const data = await apiUpload<UploadResponse>(
           "/documents/upload",
           formData
         );
+
+        // If a new conversation was created server-side, store its id
+        if (!conversationId && data.conversation_id) {
+          setConversationId(data.conversation_id);
+          onConversationCreatedRef.current?.();
+        }
 
         const assistantMsg: ChatMessage = {
           id: crypto.randomUUID(),
@@ -128,7 +153,7 @@ export function useChat() {
         setLoading(false);
       }
     },
-    []
+    [conversationId]
   );
 
   const appendVoiceTranscript = useCallback((transcript: string) => {
@@ -176,13 +201,31 @@ export function useChat() {
     setMessages((prev) => [...prev, msg]);
   }, []);
 
+  const newConversation = useCallback(() => {
+    setConversationId(null);
+    setMessages([]);
+  }, []);
+
+  const selectConversation = useCallback(async (id: string) => {
+    setConversationId(id);
+    await loadHistory(id);
+  }, [loadHistory]);
+
+  const setOnConversationCreated = useCallback((cb: () => void) => {
+    onConversationCreatedRef.current = cb;
+  }, []);
+
   return {
     messages,
     loading,
+    conversationId,
     sendMessage,
     sendMessageWithFile,
     appendVoiceTranscript,
     appendVisionAnalysis,
     loadHistory,
+    newConversation,
+    selectConversation,
+    setOnConversationCreated,
   };
 }
