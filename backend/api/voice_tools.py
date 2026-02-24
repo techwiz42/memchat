@@ -5,6 +5,7 @@ Authentication is via voice session token (not JWT), since Omnia is the caller.
 
 POST /api/voice-tools/rag-query    — Search user's knowledge base
 POST /api/voice-tools/store-memory — Store new information
+POST /api/voice-tools/web-search   — Search the internet
 """
 
 import uuid
@@ -18,6 +19,8 @@ from memory.embeddings import embed_text
 from memory.rag import retrieve_context
 from memory.vector_store import store_embedding
 from models import get_db
+from search.google_search import web_search
+from search.web_fetch import web_fetch
 from voice.session_manager import validate_session
 
 logger = logging.getLogger(__name__)
@@ -67,6 +70,26 @@ class StoreMemoryResponse(BaseModel):
     status: str
 
 
+class WebSearchRequest(BaseModel):
+    query: str
+    user_id: str | None = None  # Ignored — session token is authoritative
+    call_id: str | None = None
+
+
+class WebSearchResponse(BaseModel):
+    result: str
+
+
+class WebFetchRequest(BaseModel):
+    url: str
+    user_id: str | None = None  # Ignored — session token is authoritative
+    call_id: str | None = None
+
+
+class WebFetchResponse(BaseModel):
+    result: str
+
+
 @router.post("/rag-query", response_model=RagQueryResponse)
 async def rag_query(
     body: RagQueryRequest,
@@ -106,3 +129,37 @@ async def store_memory(
     await store_embedding(db, user_id, body.content, embedding)
 
     return StoreMemoryResponse(status="stored")
+
+
+@router.post("/web-search", response_model=WebSearchResponse)
+async def voice_web_search(
+    body: WebSearchRequest,
+    request: Request,
+):
+    """Search the internet for current information.
+
+    Called by Omnia when its LLM invokes the web_search tool.
+    Returns formatted search results from Google Custom Search.
+    """
+    user_id = await _get_user_id_from_session(request)
+    logger.info(f"Voice web search for user {user_id}: {body.query[:100]}")
+
+    result = await web_search(body.query)
+    return WebSearchResponse(result=result)
+
+
+@router.post("/web-fetch", response_model=WebFetchResponse)
+async def voice_web_fetch(
+    body: WebFetchRequest,
+    request: Request,
+):
+    """Fetch and read the content of a web page.
+
+    Called by Omnia when its LLM invokes the web_fetch tool.
+    Returns extracted text content from the URL.
+    """
+    user_id = await _get_user_id_from_session(request)
+    logger.info(f"Voice web fetch for user {user_id}: {body.url[:100]}")
+
+    result = await web_fetch(body.url)
+    return WebFetchResponse(result=result)

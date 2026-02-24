@@ -68,6 +68,8 @@ class Settings:
         self._app_secret_key: str | None = None
         self._google_client_id: str | None = None
         self._google_client_secret: str | None = None
+        self._google_api_key: str | None = None
+        self._google_search_engine_id: str | None = None
 
         # Public config
         self.public_base_url = os.environ.get("PUBLIC_BASE_URL", "http://localhost:8000")
@@ -134,6 +136,18 @@ class Settings:
         if self._google_client_secret is None:
             self._google_client_secret = _read_secret("GOOGLE_CLIENT_SECRET")
         return self._google_client_secret
+
+    @property
+    def google_api_key(self) -> str:
+        if self._google_api_key is None:
+            self._google_api_key = _read_secret("GOOGLE_API_KEY")
+        return self._google_api_key
+
+    @property
+    def google_search_engine_id(self) -> str:
+        if self._google_search_engine_id is None:
+            self._google_search_engine_id = _read_secret("GOOGLE_SEARCH_ENGINE_ID")
+        return self._google_search_engine_id
 
     @property
     def google_redirect_uri(self) -> str:

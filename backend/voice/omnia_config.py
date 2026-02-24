@@ -34,6 +34,13 @@ You can also store new information the user shares using the store_memory tool. 
 - The user shares important personal information (preferences, goals, key facts)
 - The user provides information they'd want to recall later
 
+You also have access to internet tools:
+- web_search: Search the internet for current information. Use for recent events, news, or real-time data.
+- web_fetch: Fetch and read the full content of any web page. Use when the user gives you a URL,
+  or when you want to read the full article from a search result.
+Do not search for things you can answer confidently from your own knowledge.
+When you use search results or fetched content, briefly mention the source.
+
 Be conversational, warm, and concise. This is a voice conversation — keep responses natural and
 spoken-word friendly. Avoid long lists or overly structured responses. If you don't have relevant
 information from the knowledge base, say so honestly and offer to help in other ways.
@@ -135,7 +142,76 @@ def build_tool_definitions(base_url: str, session_token: str, user_id: str) -> l
         },
     }
 
-    return [rag_query_tool, store_memory_tool]
+    web_search_tool = {
+        "temporaryTool": {
+            "modelToolName": "web_search",
+            "description": (
+                "Search the internet for current information. Use this when the user asks about "
+                "recent events, news, current data, or anything that requires up-to-date information "
+                "beyond your training data."
+            ),
+            "dynamicParameters": [
+                {
+                    "name": "query",
+                    "location": "PARAMETER_LOCATION_BODY",
+                    "schema": {
+                        "type": "string",
+                        "description": "The search query to look up on the internet",
+                    },
+                    "required": True,
+                },
+            ],
+            "automaticParameters": [
+                {
+                    "name": "call_id",
+                    "location": "PARAMETER_LOCATION_BODY",
+                    "knownValue": "KNOWN_PARAM_CALL_ID",
+                },
+            ],
+            "staticParameters": static_params,
+            "http": {
+                "baseUrlPattern": f"{base_url}/api/voice-tools/web-search",
+                "httpMethod": "POST",
+            },
+            "timeout": "20s",
+        },
+    }
+
+    web_fetch_tool = {
+        "temporaryTool": {
+            "modelToolName": "web_fetch",
+            "description": (
+                "Fetch and read the content of a web page. Use this when the user provides a URL "
+                "to read, or when you need to get the full content of a page found via web_search."
+            ),
+            "dynamicParameters": [
+                {
+                    "name": "url",
+                    "location": "PARAMETER_LOCATION_BODY",
+                    "schema": {
+                        "type": "string",
+                        "description": "The URL of the web page to fetch and read",
+                    },
+                    "required": True,
+                },
+            ],
+            "automaticParameters": [
+                {
+                    "name": "call_id",
+                    "location": "PARAMETER_LOCATION_BODY",
+                    "knownValue": "KNOWN_PARAM_CALL_ID",
+                },
+            ],
+            "staticParameters": static_params,
+            "http": {
+                "baseUrlPattern": f"{base_url}/api/voice-tools/web-fetch",
+                "httpMethod": "POST",
+            },
+            "timeout": "20s",
+        },
+    }
+
+    return [rag_query_tool, store_memory_tool, web_search_tool, web_fetch_tool]
 
 
 def _build_context_prompt(recent_messages: list[Message], agent_name: str = "Assistant") -> str:

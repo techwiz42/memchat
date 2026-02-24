@@ -1,5 +1,6 @@
-"""Text chat endpoint with RAG-augmented LLM responses."""
+"""Text chat endpoint with RAG-augmented LLM responses and web search tool."""
 
+import json
 import uuid
 import logging
 
@@ -17,6 +18,8 @@ from memory.rag import retrieve_context
 from memory.vector_store import store_embedding
 from models import Message, MessageSource, get_db
 from api.settings import get_or_create_settings
+from search.google_search import web_search
+from search.web_fetch import web_fetch
 
 logger = logging.getLogger(__name__)
 
@@ -50,11 +53,64 @@ class MessageOut(BaseModel):
     created_at: str
 
 
+WEB_SEARCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": (
+            "Search the internet for current information. Use this when the user asks about "
+            "recent events, news, current data, or anything that requires up-to-date information "
+            "beyond your training data."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The search query to look up on the internet.",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+}
+
+WEB_FETCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "web_fetch",
+        "description": (
+            "Fetch and read the content of a web page. Use this when the user provides a URL "
+            "to read, or when you need to get the full content of a page found via web_search."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "The URL of the web page to fetch and read.",
+                },
+            },
+            "required": ["url"],
+        },
+    },
+}
+
+MAX_TOOL_ITERATIONS = 5
+
 SYSTEM_PROMPT_TEMPLATE = """Your name is {agent_name}. Always refer to yourself as {agent_name} when asked your name or when introducing yourself.
 
 You are a helpful personal assistant with access to the user's stored memories and knowledge.
 When relevant context from the user's memory is provided, use it to give personalized, informed responses.
 If you don't have relevant information in the provided context, say so honestly.
+
+You have access to two internet tools:
+- web_search: Search the internet for current information. Use for recent events, news, or real-time data.
+- web_fetch: Fetch and read the full content of any web page. Use when the user gives you a URL,
+  or when you want to read the full article from a search result.
+
+Do not search for things you can answer confidently from your own knowledge.
+When you use search results or fetched content, briefly cite the source.
 
 You are an intellectually curious conversationalist.
 Prioritize insight over summary.
@@ -107,7 +163,7 @@ async def chat(
 
     messages.append({"role": "user", "content": body.message})
 
-    # Call LLM
+    # Call LLM with tool-calling loop
     client = _get_llm_client()
     model = user_settings.llm_model
     _restricted = model.startswith("gpt-5") or model.startswith("o")
@@ -115,6 +171,7 @@ async def chat(
     llm_kwargs: dict = {
         "model": model,
         "messages": messages,
+        "tools": [WEB_SEARCH_TOOL, WEB_FETCH_TOOL],
     }
     # GPT-5 and o-series models only support default temperature
     if not _restricted:
@@ -124,8 +181,39 @@ async def chat(
             llm_kwargs["max_completion_tokens"] = user_settings.llm_max_tokens
         else:
             llm_kwargs["max_tokens"] = user_settings.llm_max_tokens
-    completion = await client.chat.completions.create(**llm_kwargs)
-    assistant_content = completion.choices[0].message.content
+
+    assistant_content = None
+    for _ in range(MAX_TOOL_ITERATIONS):
+        completion = await client.chat.completions.create(**llm_kwargs)
+        choice = completion.choices[0]
+
+        if choice.finish_reason == "tool_calls" and choice.message.tool_calls:
+            # Append the assistant message with tool calls
+            messages.append(choice.message)
+
+            for tool_call in choice.message.tool_calls:
+                args = json.loads(tool_call.function.arguments)
+                if tool_call.function.name == "web_search":
+                    query = args.get("query", "")
+                    logger.info(f"LLM invoked web_search for user {user_id}: {query!r}")
+                    result = await web_search(query)
+                elif tool_call.function.name == "web_fetch":
+                    url = args.get("url", "")
+                    logger.info(f"LLM invoked web_fetch for user {user_id}: {url!r}")
+                    result = await web_fetch(url)
+                else:
+                    result = f"Unknown tool: {tool_call.function.name}"
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": result,
+                })
+        else:
+            assistant_content = choice.message.content
+            break
+
+    if assistant_content is None:
+        assistant_content = "I'm sorry, I wasn't able to complete that request. Please try again."
 
     # Store both messages in conversation history
     user_msg = Message(user_id=user_id, role="user", content=body.message, source=MessageSource.TEXT)
