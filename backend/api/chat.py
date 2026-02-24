@@ -3,6 +3,7 @@
 import uuid
 import logging
 
+import tiktoken
 from fastapi import APIRouter, Depends, HTTPException
 from openai import AsyncOpenAI
 from pydantic import BaseModel
@@ -21,6 +22,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
+HISTORY_TOKEN_BUDGET = 5000
+_tokenizer = tiktoken.get_encoding("cl100k_base")
 _llm_client: AsyncOpenAI | None = None
 
 
@@ -82,28 +85,45 @@ async def chat(
             "content": f"Relevant context from the user's memory:\n\n{context}",
         })
 
-    # Fetch recent conversation history for continuity
+    # Fetch recent conversation history, trimmed to token budget
     recent = await db.execute(
         select(Message)
         .where(Message.user_id == user_id)
         .order_by(Message.created_at.desc())
-        .limit(20)
+        .limit(100)
     )
-    history = list(reversed(recent.scalars().all()))
-    for msg in history:
+    recent_msgs = recent.scalars().all()  # newest-first
+    token_count = 0
+    selected: list[Message] = []
+    for msg in recent_msgs:
+        msg_tokens = len(_tokenizer.encode(msg.content)) + 4  # +4 for role/framing overhead
+        if token_count + msg_tokens > HISTORY_TOKEN_BUDGET:
+            break
+        token_count += msg_tokens
+        selected.append(msg)
+    selected.reverse()  # back to chronological order
+    for msg in selected:
         messages.append({"role": msg.role, "content": msg.content})
 
     messages.append({"role": "user", "content": body.message})
 
     # Call LLM
     client = _get_llm_client()
+    model = user_settings.llm_model
+    _restricted = model.startswith("gpt-5") or model.startswith("o")
+
     llm_kwargs: dict = {
-        "model": user_settings.llm_model,
+        "model": model,
         "messages": messages,
-        "temperature": user_settings.llm_temperature,
     }
+    # GPT-5 and o-series models only support default temperature
+    if not _restricted:
+        llm_kwargs["temperature"] = user_settings.llm_temperature
     if user_settings.llm_max_tokens is not None:
-        llm_kwargs["max_tokens"] = user_settings.llm_max_tokens
+        if _restricted:
+            llm_kwargs["max_completion_tokens"] = user_settings.llm_max_tokens
+        else:
+            llm_kwargs["max_tokens"] = user_settings.llm_max_tokens
     completion = await client.chat.completions.create(**llm_kwargs)
     assistant_content = completion.choices[0].message.content
 

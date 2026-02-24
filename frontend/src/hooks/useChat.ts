@@ -132,14 +132,37 @@ export function useChat() {
   );
 
   const appendVoiceTranscript = useCallback((transcript: string) => {
-    const msg: ChatMessage = {
-      id: crypto.randomUUID(),
-      role: "assistant",
-      content: `[Voice conversation]\n${transcript}`,
-      source: "voice",
-      created_at: new Date().toISOString(),
-    };
-    setMessages((prev) => [...prev, msg]);
+    // Parse "User: ..." / "Agent: ..." lines into separate ChatMessages
+    const speakerRe = /^(User|Agent):\s*/gm;
+    const parts: ChatMessage[] = [];
+    const splits = transcript.split(speakerRe);
+    // splits: [preamble?, "User", content, "Agent", content, ...]
+    let i = 1;
+    while (i + 1 < splits.length) {
+      const speaker = splits[i];
+      const content = splits[i + 1].trim();
+      if (content) {
+        parts.push({
+          id: crypto.randomUUID(),
+          role: speaker === "User" ? "user" : "assistant",
+          content,
+          source: "voice",
+          created_at: new Date().toISOString(),
+        });
+      }
+      i += 2;
+    }
+    // Fallback: if parsing produced nothing, show as single assistant message
+    if (parts.length === 0) {
+      parts.push({
+        id: crypto.randomUUID(),
+        role: "assistant",
+        content: transcript.trim(),
+        source: "voice",
+        created_at: new Date().toISOString(),
+      });
+    }
+    setMessages((prev) => [...prev, ...parts]);
   }, []);
 
   return {

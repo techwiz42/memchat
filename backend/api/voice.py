@@ -5,9 +5,12 @@ POST /api/voice/end    — End session, store transcript
 GET  /api/voice/voices — List available Omnia voices
 """
 
+import re
 import uuid
 import logging
 from datetime import datetime, timezone
+
+import tiktoken
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -25,6 +28,42 @@ from voice.omnia_config import build_inline_call_config
 from voice.session_manager import create_session, end_session, end_session_by_user
 
 logger = logging.getLogger(__name__)
+
+HISTORY_TOKEN_BUDGET = 5000
+_tokenizer = tiktoken.get_encoding("cl100k_base")
+
+# Pattern matches "User: ..." or "Agent: ..." at the start of a line
+_SPEAKER_RE = re.compile(r"^(User|Agent):\s*", re.MULTILINE)
+
+
+def _parse_transcript(transcript: str) -> list[tuple[str, str]]:
+    """Parse a voice transcript into (role, content) pairs.
+
+    Handles multi-line utterances where content spans multiple lines before
+    the next User:/Agent: prefix.
+
+    Returns list of ("user"|"assistant", content_text) tuples.
+    """
+    splits = _SPEAKER_RE.split(transcript)
+    # splits looks like: [maybe_preamble, "User", content, "Agent", content, ...]
+    utterances: list[tuple[str, str]] = []
+
+    # Start at index 1 to skip any preamble text before the first speaker tag
+    i = 1
+    while i + 1 < len(splits):
+        speaker = splits[i]       # "User" or "Agent"
+        content = splits[i + 1].strip()
+        if content:
+            role = "user" if speaker == "User" else "assistant"
+            utterances.append((role, content))
+        i += 2
+
+    # Fallback: if parsing produced nothing, store the whole transcript as assistant
+    if not utterances:
+        utterances.append(("assistant", transcript.strip()))
+
+    return utterances
+
 
 router = APIRouter(prefix="/api/voice", tags=["voice"])
 
@@ -54,14 +93,24 @@ async def start_voice_session(
     Creates a voice session token, builds the Omnia inline call config,
     and returns the joinUrl for the browser to connect via WebRTC.
     """
-    # Fetch recent conversation history for continuity
+    # Fetch recent conversation history, trimmed to token budget
     recent = await db.execute(
         select(Message)
         .where(Message.user_id == user_id)
         .order_by(Message.created_at.desc())
-        .limit(10)
+        .limit(100)
     )
-    recent_messages = list(reversed(recent.scalars().all()))
+    recent_all = recent.scalars().all()  # newest-first
+    token_count = 0
+    selected: list[Message] = []
+    for msg in recent_all:
+        msg_tokens = len(_tokenizer.encode(msg.content)) + 4
+        if token_count + msg_tokens > HISTORY_TOKEN_BUDGET:
+            break
+        token_count += msg_tokens
+        selected.append(msg)
+    selected.reverse()
+    recent_messages = selected
 
     # Load per-user voice settings
     user_settings = await get_or_create_settings(db, user_id)
@@ -151,20 +200,23 @@ async def end_voice_session(
     voice_session.summary = summary
     voice_session.ended_at = datetime.now(timezone.utc)
 
-    # Store transcript as conversation message and embed into RAG
+    # Store transcript as individual messages and embed into RAG
     if transcript:
-        transcript_content = f"[Voice conversation transcript]\n{transcript}"
-        msg = Message(
-            user_id=user_id,
-            role="assistant",
-            content=transcript_content,
-            source=MessageSource.VOICE,
-        )
-        db.add(msg)
+        # Parse transcript into individual utterances
+        utterances = _parse_transcript(transcript)
+        for role, content in utterances:
+            msg = Message(
+                user_id=user_id,
+                role=role,
+                content=content,
+                source=MessageSource.VOICE,
+            )
+            db.add(msg)
 
-        # Embed voice transcript so it's findable via RAG in future text/voice sessions
-        embedding = await embed_text(transcript_content)
-        await store_embedding(db, user_id, transcript_content, embedding)
+        # Embed full transcript as one chunk for RAG retrieval
+        full_text = f"[Voice conversation transcript]\n{transcript}"
+        embedding = await embed_text(full_text)
+        await store_embedding(db, user_id, full_text, embedding)
 
     await db.commit()
 

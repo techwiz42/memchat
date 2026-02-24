@@ -2,6 +2,7 @@
 
 import { Suspense, useState, FormEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import Link from "next/link";
 import { useAuth } from "@/hooks/useAuth";
 
 function GoogleIcon() {
@@ -62,7 +63,7 @@ function LoginForm() {
   const displayError = error || (oauthError ? formatOAuthError(oauthError) : "");
 
   return (
-    <div className="flex items-center justify-center min-h-screen bg-gray-50">
+    <div className="flex flex-col items-center justify-center min-h-screen bg-gray-50">
       <div className="w-full max-w-sm bg-white rounded-2xl shadow-lg p-8">
         <h1 className="text-2xl font-bold text-center mb-6">
           {isRegister ? "Create Account" : "Sign In"}
@@ -142,6 +143,16 @@ function LoginForm() {
           </button>
         </p>
       </div>
+
+      <footer className="mt-6 text-xs text-gray-400">
+        <Link href="/privacy" className="hover:text-gray-600 hover:underline">
+          Privacy Policy
+        </Link>
+        <span className="mx-2">&middot;</span>
+        <Link href="/terms" className="hover:text-gray-600 hover:underline">
+          Terms of Service
+        </Link>
+      </footer>
     </div>
   );
 }
