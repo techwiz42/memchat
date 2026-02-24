@@ -30,10 +30,16 @@ export default function ChatPage() {
     appendVisionAnalysis,
     newConversation,
     selectConversation,
-    setOnConversationCreated,
   } = useChat();
   const { conversations, loadConversations, deleteConversation } = useConversations();
   const { status, transcripts, isActive, startSession, endSession, sendText } = useVoiceSession();
+
+  // Refs for voice state so the video onAnalysis callback always reads fresh values
+  const isVoiceActiveRef = useRef(isActive);
+  isVoiceActiveRef.current = isActive;
+  const sendTextRef = useRef(sendText);
+  sendTextRef.current = sendText;
+
   const {
     status: cameraStatus,
     isActive: isCameraActive,
@@ -42,7 +48,14 @@ export default function ChatPage() {
     startStream,
     stopStream,
   } = useVideoStream({
-    onAnalysis: (content) => appendVisionAnalysis(content),
+    onAnalysis: (content, trigger) => {
+      appendVisionAnalysis(content);
+      if (isVoiceActiveRef.current) {
+        sendTextRef.current(
+          `[Vision update — ${trigger}] Here is what the camera sees: ${content}`
+        );
+      }
+    },
   });
   const voiceFileRef = useRef<HTMLInputElement>(null);
 
@@ -53,12 +66,12 @@ export default function ChatPage() {
     }
   }, [authLoading, loadConversations]);
 
-  // Register callback so new conversations refresh the sidebar
+  // Refresh sidebar whenever conversationId changes (new conversation created)
   useEffect(() => {
-    setOnConversationCreated(() => {
+    if (conversationId) {
       loadConversations();
-    });
-  }, [setOnConversationCreated, loadConversations]);
+    }
+  }, [conversationId, loadConversations]);
 
   const handleVoiceFileSelect = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
@@ -236,7 +249,7 @@ export default function ChatPage() {
                 <input
                   ref={voiceFileRef}
                   type="file"
-                  accept=".txt,.md,.pdf,.docx,.xlsx,.csv,.jpg,.jpeg,.png,.gif,.webp,.bmp,.tiff"
+                  accept=".txt,.md,.pdf,.docx,.xlsx,.csv,.fdx,.jpg,.jpeg,.png,.gif,.webp,.bmp,.tiff"
                   onChange={(e) => handleVoiceFileSelect(e.target.files)}
                   className="hidden"
                 />

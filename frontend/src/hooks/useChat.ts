@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useRef } from "react";
 import { apiFetch, apiUpload } from "@/lib/api";
 
 export interface ChatMessage {
@@ -23,8 +23,9 @@ export function useChat() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
-  // Track callback so sidebar can be refreshed after new conversation is created
-  const onConversationCreatedRef = useRef<(() => void) | null>(null);
+  // Use ref so sendMessage always reads the latest conversationId without re-creating the callback
+  const conversationIdRef = useRef<string | null>(null);
+  conversationIdRef.current = conversationId;
 
   const loadHistory = useCallback(async (convId?: string | null) => {
     try {
@@ -40,11 +41,6 @@ export function useChat() {
     }
   }, []);
 
-  // Load history on mount — no conversation selected means no filter (shows nothing for fresh start)
-  useEffect(() => {
-    // Don't load all messages on mount — user should pick or create a conversation
-  }, []);
-
   const sendMessage = useCallback(async (text: string) => {
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(),
@@ -57,15 +53,16 @@ export function useChat() {
     setLoading(true);
 
     try {
+      const currentConvId = conversationIdRef.current;
       const data = await apiFetch<{ response: string; conversation_id: string }>("/chat", {
         method: "POST",
-        body: JSON.stringify({ message: text, conversation_id: conversationId }),
+        body: JSON.stringify({ message: text, conversation_id: currentConvId }),
       });
 
       // If a new conversation was created, store its id
-      if (!conversationId && data.conversation_id) {
+      if (!currentConvId && data.conversation_id) {
         setConversationId(data.conversation_id);
-        onConversationCreatedRef.current?.();
+        conversationIdRef.current = data.conversation_id;
       }
 
       const assistantMsg: ChatMessage = {
@@ -89,7 +86,7 @@ export function useChat() {
     } finally {
       setLoading(false);
     }
-  }, [conversationId]);
+  }, []);
 
   const sendMessageWithFile = useCallback(
     async (text: string, file: File): Promise<UploadResponse | null> => {
@@ -106,13 +103,14 @@ export function useChat() {
       setLoading(true);
 
       try {
+        const currentConvId = conversationIdRef.current;
         const formData = new FormData();
         formData.append("file", file);
         if (text) {
           formData.append("message", text);
         }
-        if (conversationId) {
-          formData.append("conversation_id", conversationId);
+        if (currentConvId) {
+          formData.append("conversation_id", currentConvId);
         }
 
         const data = await apiUpload<UploadResponse>(
@@ -121,9 +119,9 @@ export function useChat() {
         );
 
         // If a new conversation was created server-side, store its id
-        if (!conversationId && data.conversation_id) {
+        if (!currentConvId && data.conversation_id) {
           setConversationId(data.conversation_id);
-          onConversationCreatedRef.current?.();
+          conversationIdRef.current = data.conversation_id;
         }
 
         const assistantMsg: ChatMessage = {
@@ -153,7 +151,7 @@ export function useChat() {
         setLoading(false);
       }
     },
-    [conversationId]
+    []
   );
 
   const appendVoiceTranscript = useCallback((transcript: string) => {
@@ -203,6 +201,7 @@ export function useChat() {
 
   const newConversation = useCallback(() => {
     setConversationId(null);
+    conversationIdRef.current = null;
     setMessages([]);
   }, []);
 
@@ -210,10 +209,6 @@ export function useChat() {
     setConversationId(id);
     await loadHistory(id);
   }, [loadHistory]);
-
-  const setOnConversationCreated = useCallback((cb: () => void) => {
-    onConversationCreatedRef.current = cb;
-  }, []);
 
   return {
     messages,
@@ -226,6 +221,5 @@ export function useChat() {
     loadHistory,
     newConversation,
     selectConversation,
-    setOnConversationCreated,
   };
 }

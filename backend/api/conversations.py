@@ -17,6 +17,7 @@ router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 class ConversationOut(BaseModel):
     id: str
     title: str
+    summary: str | None = None
     created_at: str
     updated_at: str
 
@@ -37,6 +38,7 @@ async def list_conversations(
         ConversationOut(
             id=str(c.id),
             title=c.title,
+            summary=c.summary,
             created_at=c.created_at.isoformat(),
             updated_at=c.updated_at.isoformat(),
         )
@@ -57,6 +59,7 @@ async def create_conversation(
     return ConversationOut(
         id=str(conv.id),
         title=conv.title,
+        summary=conv.summary,
         created_at=conv.created_at.isoformat(),
         updated_at=conv.updated_at.isoformat(),
     )

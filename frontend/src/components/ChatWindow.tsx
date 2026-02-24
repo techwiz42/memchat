@@ -5,7 +5,7 @@ import { ChatMessage, UploadResponse } from "@/hooks/useChat";
 import MessageBubble from "./MessageBubble";
 
 const ACCEPTED_EXTENSIONS =
-  ".txt,.md,.pdf,.docx,.xlsx,.csv,.jpg,.jpeg,.png,.gif,.webp,.bmp,.tiff";
+  ".txt,.md,.pdf,.docx,.xlsx,.csv,.fdx,.jpg,.jpeg,.png,.gif,.webp,.bmp,.tiff";
 
 const IMAGE_TYPES = new Set([
   "image/jpeg",

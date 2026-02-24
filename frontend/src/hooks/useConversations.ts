@@ -6,6 +6,7 @@ import { apiFetch } from "@/lib/api";
 export interface ConversationItem {
   id: string;
   title: string;
+  summary: string | null;
   created_at: string;
   updated_at: string;
 }

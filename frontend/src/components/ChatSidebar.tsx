@@ -68,7 +68,8 @@ export default function ChatSidebar({
                 <li key={conv.id} className="group relative">
                   <button
                     onClick={() => onSelect(conv.id)}
-                    className={`w-full text-left px-3 py-2.5 rounded-lg text-sm transition-colors ${
+                    title={conv.summary || undefined}
+                    className={`peer w-full text-left px-3 py-2.5 rounded-lg text-sm transition-colors ${
                       isActive
                         ? "bg-blue-50 text-blue-700 font-medium"
                         : "text-gray-700 hover:bg-gray-100"

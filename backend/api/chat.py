@@ -17,14 +17,19 @@ from config import settings
 from memory.embeddings import embed_text
 from memory.rag import retrieve_context
 from memory.vector_store import store_embedding
-from models import Conversation, Message, MessageSource, get_db
+from models import Conversation, ConversationDocument, Message, MessageSource, get_db
 from api.settings import get_or_create_settings
 from search.google_search import web_search
 from search.web_fetch import web_fetch
+from document.editor import edit_preserving_format
+from document.generator import generate_document
+from document.store import store_document
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+
+SUMMARY_MODEL = "gpt-4o-mini"
 
 HISTORY_TOKEN_BUDGET = 5000
 _tokenizer = tiktoken.get_encoding("cl100k_base")
@@ -36,6 +41,39 @@ def _get_llm_client() -> AsyncOpenAI:
     if _llm_client is None:
         _llm_client = AsyncOpenAI(api_key=settings.llm_api_key)
     return _llm_client
+
+
+async def _generate_summary(
+    client: AsyncOpenAI,
+    user_message: str,
+    assistant_response: str,
+    existing_summary: str | None,
+) -> str:
+    """Generate a brief conversation summary using a fast, cheap model."""
+    if existing_summary:
+        prompt = (
+            f"Current summary: {existing_summary}\n\n"
+            f"New exchange:\nUser: {user_message}\nAssistant: {assistant_response}\n\n"
+            "Update the summary to reflect this new exchange. "
+            "Keep it to 1-2 concise sentences capturing the key topics discussed so far."
+        )
+    else:
+        prompt = (
+            f"User: {user_message}\nAssistant: {assistant_response}\n\n"
+            "Write a 1-2 sentence summary of this conversation so far. "
+            "Be concise and capture the key topic."
+        )
+    try:
+        resp = await client.chat.completions.create(
+            model=SUMMARY_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=100,
+            temperature=0.3,
+        )
+        return resp.choices[0].message.content.strip()
+    except Exception as e:
+        logger.warning("Failed to generate conversation summary: %s", e)
+        return existing_summary or ""
 
 
 class ChatRequest(BaseModel):
@@ -99,6 +137,44 @@ WEB_FETCH_TOOL = {
     },
 }
 
+CREATE_DOCUMENT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "create_document",
+        "description": (
+            "Create a downloadable document file. Use this when the user asks you to generate, "
+            "write, create, or export a document, file, spreadsheet, PDF, or screenplay. "
+            "Supported formats: .txt (plain text), .md (Markdown), .csv (spreadsheet), "
+            ".pdf (PDF), .docx (Word document), .xlsx (Excel spreadsheet), "
+            ".fdx (Final Draft screenplay). "
+            "When the user says 'Final Draft' they mean the .fdx screenplay format."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "filename": {
+                    "type": "string",
+                    "description": (
+                        "The filename with extension, e.g. 'report.pdf', 'data.csv', 'screenplay.fdx'. "
+                        "The extension determines the output format. "
+                        "Use .fdx for Final Draft screenplays."
+                    ),
+                },
+                "content": {
+                    "type": "string",
+                    "description": (
+                        "The full text content for the document. For CSV/XLSX, use comma-separated "
+                        "or tab-separated rows. For FDX (Final Draft), use standard screenplay "
+                        "formatting with scene headings (INT./EXT.), character names in ALL CAPS, "
+                        "dialogue, action lines, and transitions."
+                    ),
+                },
+            },
+            "required": ["filename", "content"],
+        },
+    },
+}
+
 MAX_TOOL_ITERATIONS = 5
 
 SYSTEM_PROMPT_TEMPLATE = """Your name is {agent_name}. Always refer to yourself as {agent_name} when asked your name or when introducing yourself.
@@ -107,10 +183,20 @@ You are a helpful personal assistant with access to the user's stored memories a
 When relevant context from the user's memory is provided, use it to give personalized, informed responses.
 If you don't have relevant information in the provided context, say so honestly.
 
-You have access to two internet tools:
+You have access to these tools:
 - web_search: Search the internet for current information. Use for recent events, news, or real-time data.
 - web_fetch: Fetch and read the full content of any web page. Use when the user gives you a URL,
   or when you want to read the full article from a search result.
+- create_document: Create a downloadable document file. Use when the user asks you to generate,
+  write, create, or export a file. Supported formats: .txt, .md, .csv, .pdf, .docx, .xlsx,
+  .fdx (Final Draft screenplay). When the user says "Final Draft" they mean .fdx format.
+  After creating a document, include the download link in your response using markdown:
+  [Download filename](url)
+
+When the user uploads a document and asks you to edit, revise, or modify it, you will have the
+full document content in your context. Make the requested changes and use create_document to
+provide the complete edited document as a downloadable file. Always include the ENTIRE document
+in your output, not just the changed parts.
 
 Do not search for things you can answer confidently from your own knowledge.
 When you use search results or fetched content, briefly cite the source.
@@ -167,6 +253,27 @@ async def chat(
             "content": f"Relevant context from the user's memory:\n\n{context}",
         })
 
+    # Load full document content uploaded in this conversation
+    doc_result = await db.execute(
+        select(ConversationDocument)
+        .where(
+            ConversationDocument.conversation_id == conv_id,
+            ConversationDocument.user_id == user_id,
+        )
+        .order_by(ConversationDocument.created_at)
+    )
+    uploaded_docs = doc_result.scalars().all()
+    if uploaded_docs:
+        doc_parts = []
+        for doc in uploaded_docs:
+            doc_parts.append(f"--- {doc.filename} ---\n{doc.content}\n--- end {doc.filename} ---")
+        doc_context = (
+            "The user has uploaded the following document(s) in this conversation. "
+            "You have the full content available and can edit it as requested.\n\n"
+            + "\n\n".join(doc_parts)
+        )
+        messages.append({"role": "system", "content": doc_context})
+
     # Fetch recent conversation history, trimmed to token budget
     recent = await db.execute(
         select(Message)
@@ -197,16 +304,27 @@ async def chat(
     llm_kwargs: dict = {
         "model": model,
         "messages": messages,
-        "tools": [WEB_SEARCH_TOOL, WEB_FETCH_TOOL],
+        "tools": [WEB_SEARCH_TOOL, WEB_FETCH_TOOL, CREATE_DOCUMENT_TOOL],
     }
     # GPT-5 and o-series models only support default temperature
     if not _restricted:
         llm_kwargs["temperature"] = user_settings.llm_temperature
-    if user_settings.llm_max_tokens is not None:
+    # Determine output token budget.  When the conversation has uploaded
+    # documents the LLM must be able to emit the full document inside a
+    # create_document tool-call, so we compute a floor based on document size.
+    effective_max_tokens = user_settings.llm_max_tokens
+    if uploaded_docs:
+        total_doc_chars = sum(len(d.content) for d in uploaded_docs)
+        # ~3.5 chars per token for English text, plus headroom for JSON framing
+        doc_token_floor = int(total_doc_chars / 3.5) + 512
+        if effective_max_tokens is None or effective_max_tokens < doc_token_floor:
+            effective_max_tokens = doc_token_floor
+
+    if effective_max_tokens is not None:
         if _restricted:
-            llm_kwargs["max_completion_tokens"] = user_settings.llm_max_tokens
+            llm_kwargs["max_completion_tokens"] = effective_max_tokens
         else:
-            llm_kwargs["max_tokens"] = user_settings.llm_max_tokens
+            llm_kwargs["max_tokens"] = effective_max_tokens
 
     assistant_content = None
     for _ in range(MAX_TOOL_ITERATIONS):
@@ -227,6 +345,36 @@ async def chat(
                     url = args.get("url", "")
                     logger.info(f"LLM invoked web_fetch for user {user_id}: {url!r}")
                     result = await web_fetch(url)
+                elif tool_call.function.name == "create_document":
+                    doc_filename = args.get("filename", "document.txt")
+                    doc_content = args.get("content", "")
+                    logger.info(f"LLM invoked create_document for user {user_id}: {doc_filename!r}")
+                    try:
+                        # Try format-preserving edit from uploaded original
+                        doc_bytes = None
+                        out_ext = _get_extension(doc_filename)
+                        if uploaded_docs and out_ext:
+                            # Find most recent uploaded doc with same extension
+                            for udoc in reversed(uploaded_docs):
+                                if _get_extension(udoc.filename) == out_ext and udoc.original_bytes:
+                                    doc_bytes = edit_preserving_format(
+                                        udoc.original_bytes, udoc.filename, doc_content,
+                                    )
+                                    if doc_bytes:
+                                        logger.info("Used format-preserving edit from %r", udoc.filename)
+                                    break
+                        if doc_bytes is None:
+                            doc_bytes = generate_document(doc_filename, doc_content)
+                        doc_id = store_document(user_id, doc_filename, doc_bytes)
+                        download_url = f"/api/documents/download/{doc_id}"
+                        result = (
+                            f"Document created successfully. "
+                            f"Include this exact markdown link in your response for the user to download it:\n"
+                            f"[Download {doc_filename}]({download_url})"
+                        )
+                    except Exception as e:
+                        logger.error(f"create_document failed for {doc_filename!r}: {e}", exc_info=True)
+                        result = f"Failed to create document: {e}"
                 else:
                     result = f"Unknown tool: {tool_call.function.name}"
                 messages.append({
@@ -253,8 +401,11 @@ async def chat(
     db.add(user_msg)
     db.add(assistant_msg)
 
-    # Bump conversation updated_at
+    # Bump conversation updated_at and generate summary
     conversation.updated_at = datetime.now(timezone.utc)
+    conversation.summary = await _generate_summary(
+        client, body.message, assistant_content, conversation.summary,
+    )
 
     # Embed the exchange for future RAG retrieval
     exchange_text = f"User: {body.message}\nAssistant: {assistant_content}"
@@ -295,3 +446,11 @@ async def get_history(
         )
         for m in messages
     ]
+
+
+def _get_extension(filename: str) -> str:
+    """Return the lowercase file extension including the dot."""
+    dot = filename.rfind(".")
+    if dot == -1:
+        return ""
+    return filename[dot:].lower()

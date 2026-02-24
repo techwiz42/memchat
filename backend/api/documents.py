@@ -5,6 +5,7 @@ import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi.responses import Response
 from sqlalchemy import select
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,11 +13,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from auth.jwt import get_current_user_id
 from config import settings
 from document.parser import extract_text, ALLOWED_EXTENSIONS, IMAGE_EXTENSIONS
+from document.store import get_document, store_document
 from document.vision import analyze_image
 from document.chunker import chunk_text
 from memory.embeddings import embed_text
 from memory.vector_store import store_embedding
-from models import Conversation, Message, MessageSource, get_db
+from models import Conversation, ConversationDocument, Message, MessageSource, get_db
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,7 @@ class UploadResponse(BaseModel):
     chunks: int
     extracted_text: str
     conversation_id: str | None = None
+    download_url: str | None = None
 
 
 @router.post("/upload", response_model=UploadResponse)
@@ -78,6 +81,10 @@ async def upload_document(
             detail="Could not extract any text from the uploaded file.",
         )
 
+    # Store the original file for later download
+    doc_id = store_document(user_id, filename, content)
+    download_url = f"/api/documents/download/{doc_id}"
+
     # Chunk the text
     chunks = chunk_text(extracted)
     logger.info(
@@ -94,7 +101,7 @@ async def upload_document(
         embedding = await embed_text(chunk_label)
         await store_embedding(db, user_id, chunk_label, embedding)
 
-    # Resolve conversation
+    # Resolve conversation — auto-create if none provided
     conv_id: uuid.UUID | None = None
     if conversation_id:
         try:
@@ -109,6 +116,26 @@ async def upload_document(
         conversation = result.scalar_one_or_none()
         if conversation:
             conversation.updated_at = datetime.now(timezone.utc)
+    else:
+        # Auto-create a conversation so the full document is scoped to it
+        conversation = Conversation(
+            user_id=user_id,
+            title=f"Document: {filename[:80]}",
+        )
+        db.add(conversation)
+        await db.flush()
+        conv_id = conversation.id
+
+    # Store full document text + original bytes scoped to this conversation
+    if conv_id is not None:
+        doc_record = ConversationDocument(
+            user_id=user_id,
+            conversation_id=conv_id,
+            filename=filename,
+            content=extracted,
+            original_bytes=content,
+        )
+        db.add(doc_record)
 
     # Store a user message recording the upload
     upload_note = f"[Uploaded document: {filename}]"
@@ -125,7 +152,9 @@ async def upload_document(
     confirmation = (
         f"I've processed your document **{filename}** and added it to your knowledge base. "
         f"It was split into {len(chunks)} chunk{'s' if len(chunks) != 1 else ''} "
-        f"for retrieval. You can now ask me questions about its content."
+        f"for retrieval. You can ask me questions about its content, or ask me to "
+        f"edit/revise it and I'll provide the updated document as a download.\n\n"
+        f"[Download {filename}]({download_url})"
     )
 
     assistant_msg = Message(
@@ -145,6 +174,39 @@ async def upload_document(
         chunks=len(chunks),
         extracted_text=extracted,
         conversation_id=str(conv_id) if conv_id else None,
+        download_url=download_url,
+    )
+
+
+CONTENT_TYPES = {
+    ".txt": "text/plain",
+    ".md": "text/markdown",
+    ".csv": "text/csv",
+    ".pdf": "application/pdf",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".fdx": "application/xml",
+}
+
+
+@router.get("/download/{doc_id}")
+async def download_document(
+    doc_id: str,
+    user_id: uuid.UUID = Depends(get_current_user_id),
+):
+    """Download a generated document by its ID."""
+    result = get_document(doc_id, user_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Document not found or expired")
+
+    filename, data = result
+    ext = _get_extension(filename)
+    content_type = CONTENT_TYPES.get(ext, "application/octet-stream")
+
+    return Response(
+        content=bytes(data),
+        media_type=content_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 

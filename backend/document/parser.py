@@ -2,6 +2,7 @@
 
 import csv
 import io
+import xml.etree.ElementTree as ET
 
 import pdfplumber
 from docx import Document as DocxDocument
@@ -9,7 +10,7 @@ from openpyxl import load_workbook
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff", ".tif"}
 
-ALLOWED_EXTENSIONS = {".txt", ".md", ".pdf", ".docx", ".xlsx", ".csv"} | IMAGE_EXTENSIONS
+ALLOWED_EXTENSIONS = {".txt", ".md", ".pdf", ".docx", ".xlsx", ".csv", ".fdx"} | IMAGE_EXTENSIONS
 
 
 async def extract_text(filename: str, content: bytes) -> str:
@@ -41,6 +42,9 @@ async def extract_text(filename: str, content: bytes) -> str:
 
     if ext == ".csv":
         return _extract_csv(content)
+
+    if ext == ".fdx":
+        return _extract_fdx(content)
 
     raise ValueError(
         f"Unsupported file type: {ext}. "
@@ -100,3 +104,44 @@ def _extract_csv(content: bytes) -> str:
         if any(cell.strip() for cell in row):
             rows.append("\t".join(row))
     return "\n".join(rows)
+
+
+# Screenplay paragraph types that get special formatting
+_FDX_UPPERCASE_TYPES = {"Scene Heading", "Transition", "Character"}
+
+def _extract_fdx(content: bytes) -> str:
+    """Extract screenplay text from a Final Draft .fdx XML file."""
+    root = ET.fromstring(content)
+    lines: list[str] = []
+
+    for para in root.iter("Paragraph"):
+        ptype = para.get("Type", "")
+        # Collect all Text element content within this paragraph
+        texts = []
+        for text_el in para.iter("Text"):
+            if text_el.text:
+                texts.append(text_el.text)
+        if not texts:
+            continue
+        line = "".join(texts).strip()
+        if not line:
+            continue
+
+        if ptype == "Scene Heading":
+            lines.append("")  # blank line before scene headings
+            lines.append(line.upper())
+        elif ptype == "Character":
+            lines.append("")
+            lines.append(f"  {line.upper()}")
+        elif ptype == "Parenthetical":
+            lines.append(f"  {line}")
+        elif ptype == "Dialogue":
+            lines.append(f"  {line}")
+        elif ptype == "Transition":
+            lines.append("")
+            lines.append(line.upper())
+        else:
+            # Action, General, etc.
+            lines.append(line)
+
+    return "\n".join(lines).strip()
