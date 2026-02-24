@@ -77,6 +77,11 @@ class Settings:
         self.embedding_model = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-small")
         self.embedding_dimensions = int(os.environ.get("EMBEDDING_DIMENSIONS", "1536"))
 
+        # Vision / YOLO settings
+        self.yolo_model = os.environ.get("YOLO_MODEL", "yolov8n.pt")
+        self.yolo_confidence = float(os.environ.get("YOLO_CONFIDENCE", "0.35"))
+        self.vision_change_cooldown = float(os.environ.get("VISION_CHANGE_COOLDOWN", "10"))
+
     def _build_database_url(self) -> str:
         """Build async database URL with password from secrets."""
         base_url = os.environ.get(

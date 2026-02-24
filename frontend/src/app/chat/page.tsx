@@ -7,16 +7,29 @@ import { isLoggedIn } from "@/lib/auth";
 import { useAuth } from "@/hooks/useAuth";
 import { useChat, UploadResponse } from "@/hooks/useChat";
 import { useVoiceSession } from "@/hooks/useVoiceSession";
+import { useVideoStream } from "@/hooks/useVideoStream";
 import ChatWindow from "@/components/ChatWindow";
 import VoiceButton from "@/components/VoiceButton";
 import VoiceStatus from "@/components/VoiceStatus";
 import TranscriptPanel from "@/components/TranscriptPanel";
+import CameraButton from "@/components/CameraButton";
+import VideoPreview from "@/components/VideoPreview";
 
 export default function ChatPage() {
   const router = useRouter();
   const { user, loading: authLoading, logout } = useAuth();
-  const { messages, loading: chatLoading, sendMessage, sendMessageWithFile, appendVoiceTranscript } = useChat();
+  const { messages, loading: chatLoading, sendMessage, sendMessageWithFile, appendVoiceTranscript, appendVisionAnalysis } = useChat();
   const { status, transcripts, isActive, startSession, endSession, sendText } = useVoiceSession();
+  const {
+    status: cameraStatus,
+    isActive: isCameraActive,
+    detections,
+    mediaStream,
+    startStream,
+    stopStream,
+  } = useVideoStream({
+    onAnalysis: (content) => appendVisionAnalysis(content),
+  });
   const voiceFileRef = useRef<HTMLInputElement>(null);
 
   const handleVoiceFileSelect = async (files: FileList | null) => {
@@ -50,6 +63,18 @@ export default function ChatPage() {
       );
     }
   }, [isActive, sendText]);
+
+  const handleStartCamera = useCallback(async () => {
+    try {
+      await startStream();
+    } catch (e) {
+      console.error("Camera start failed:", e);
+    }
+  }, [startStream]);
+
+  const handleStopCamera = useCallback(() => {
+    stopStream();
+  }, [stopStream]);
 
   const handleStartVoice = async () => {
     try {
@@ -87,6 +112,12 @@ export default function ChatPage() {
             onStart={handleStartVoice}
             onEnd={handleEndVoice}
           />
+          <CameraButton
+            isActive={isCameraActive}
+            status={cameraStatus}
+            onStart={handleStartCamera}
+            onStop={handleStopCamera}
+          />
           <span className="text-sm text-gray-500">{user?.email}</span>
           <Link
             href="/settings"
@@ -111,6 +142,9 @@ export default function ChatPage() {
 
       {/* Chat area */}
       <main className="flex-1 overflow-hidden relative">
+        {mediaStream && cameraStatus !== "idle" && (
+          <VideoPreview mediaStream={mediaStream} detections={detections} />
+        )}
         <ChatWindow
           messages={messages}
           loading={chatLoading}

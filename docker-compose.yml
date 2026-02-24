@@ -44,6 +44,11 @@ services:
       LLM_MODEL: ${LLM_MODEL:-gpt-4o}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
       EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1536}
+      YOLO_MODEL: ${YOLO_MODEL:-yolov8n.pt}
+      YOLO_CONFIDENCE: ${YOLO_CONFIDENCE:-0.35}
+      VISION_CHANGE_COOLDOWN: ${VISION_CHANGE_COOLDOWN:-10}
+    volumes:
+      - yolo_models:/root/.ultralytics
     secrets:
       - omnia_api_key
       - llm_api_key
@@ -93,3 +98,4 @@ secrets:
 
 volumes:
   pgdata:
+  yolo_models:

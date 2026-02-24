@@ -14,6 +14,7 @@ from .base import Base
 class MessageSource(str, enum.Enum):
     TEXT = "text"
     VOICE = "voice"
+    VISION = "vision"
 
 
 class Message(Base):

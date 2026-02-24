@@ -7,7 +7,7 @@ export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
-  source: "text" | "voice";
+  source: "text" | "voice" | "vision";
   created_at: string;
 }
 
@@ -165,12 +165,24 @@ export function useChat() {
     setMessages((prev) => [...prev, ...parts]);
   }, []);
 
+  const appendVisionAnalysis = useCallback((description: string) => {
+    const msg: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: "assistant",
+      content: description,
+      source: "vision",
+      created_at: new Date().toISOString(),
+    };
+    setMessages((prev) => [...prev, msg]);
+  }, []);
+
   return {
     messages,
     loading,
     sendMessage,
     sendMessageWithFile,
     appendVoiceTranscript,
+    appendVisionAnalysis,
     loadHistory,
   };
 }

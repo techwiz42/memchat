@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from models.base import Base, async_engine
-from api import auth, chat, documents, settings, voice, voice_tools
+from api import auth, chat, documents, settings, voice, voice_tools, vision_ws
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -27,6 +27,7 @@ app.include_router(documents.router)
 app.include_router(settings.router)
 app.include_router(voice.router)
 app.include_router(voice_tools.router)
+app.include_router(vision_ws.router)
 
 
 @app.on_event("startup")
@@ -36,6 +37,12 @@ async def startup():
     async with async_engine.begin() as conn:
         await conn.execute(
             __import__("sqlalchemy").text("CREATE EXTENSION IF NOT EXISTS vector")
+        )
+        # Migrate: add 'vision' to messagesource enum if not present
+        await conn.execute(
+            __import__("sqlalchemy").text(
+                "ALTER TYPE messagesource ADD VALUE IF NOT EXISTS 'vision'"
+            )
         )
         await conn.run_sync(Base.metadata.create_all)
         # Migrate: add agent_name column if it doesn't exist
