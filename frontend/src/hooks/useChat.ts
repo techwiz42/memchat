@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useRef } from "react";
-import { apiFetch, apiUpload } from "@/lib/api";
+import { apiFetch, apiUpload, apiStream } from "@/lib/api";
 
 export interface ChatMessage {
   id: string;
@@ -49,43 +49,60 @@ export function useChat() {
       source: "text",
       created_at: new Date().toISOString(),
     };
-    setMessages((prev) => [...prev, userMsg]);
+    const placeholderId = crypto.randomUUID();
+    const placeholderMsg: ChatMessage = {
+      id: placeholderId,
+      role: "assistant",
+      content: "",
+      source: "text",
+      created_at: new Date().toISOString(),
+    };
+    setMessages((prev) => [...prev, userMsg, placeholderMsg]);
     setLoading(true);
 
-    try {
-      const currentConvId = conversationIdRef.current;
-      const data = await apiFetch<{ response: string; conversation_id: string }>("/chat", {
-        method: "POST",
-        body: JSON.stringify({ message: text, conversation_id: currentConvId }),
-      });
+    const currentConvId = conversationIdRef.current;
+    const progressLines: string[] = [];
 
-      // If a new conversation was created, store its id
-      if (!currentConvId && data.conversation_id) {
-        setConversationId(data.conversation_id);
-        conversationIdRef.current = data.conversation_id;
-      }
-
-      const assistantMsg: ChatMessage = {
-        id: crypto.randomUUID(),
-        role: "assistant",
-        content: data.response,
-        source: "text",
-        created_at: new Date().toISOString(),
-      };
-      setMessages((prev) => [...prev, assistantMsg]);
-    } catch (e) {
-      console.error("Chat error:", e);
-      const errorMsg: ChatMessage = {
-        id: crypto.randomUUID(),
-        role: "assistant",
-        content: "Sorry, something went wrong. Please try again.",
-        source: "text",
-        created_at: new Date().toISOString(),
-      };
-      setMessages((prev) => [...prev, errorMsg]);
-    } finally {
-      setLoading(false);
-    }
+    apiStream(
+      "/chat/stream",
+      { message: text, conversation_id: currentConvId },
+      {
+        onProgress(message) {
+          progressLines.push(message);
+          const progressText = progressLines.join("  \n");
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === placeholderId ? { ...m, content: progressText } : m,
+            ),
+          );
+        },
+        onContent(finalText) {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === placeholderId ? { ...m, content: finalText } : m,
+            ),
+          );
+        },
+        onDone(convId) {
+          if (!currentConvId && convId) {
+            setConversationId(convId);
+            conversationIdRef.current = convId;
+          }
+          setLoading(false);
+        },
+        onError(error) {
+          console.error("Stream error:", error);
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === placeholderId
+                ? { ...m, content: "Sorry, something went wrong. Please try again." }
+                : m,
+            ),
+          );
+          setLoading(false);
+        },
+      },
+    );
   }, []);
 
   const sendMessageWithFile = useCallback(

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 import tiktoken
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -22,7 +23,18 @@ from models import Conversation, ConversationDocument, Message, MessageSource, g
 from api.settings import get_or_create_settings
 from search.google_search import web_search
 from search.web_fetch import web_fetch
-from document.editor import edit_preserving_format, edit_fdx_section
+from document.editor import (
+    edit_preserving_format,
+    edit_fdx_section,
+    find_replace_fdx,
+    edit_text_section,
+    find_replace_text,
+    edit_docx_section,
+    find_replace_docx,
+    edit_rich_section,
+    find_replace_rich,
+)
+from document.parser import extract_text_sync
 from document.generator import generate_document
 from document.scene_splitter import split_fdx_into_scenes, split_large_text, build_table_of_contents
 from document.store import store_document
@@ -232,7 +244,34 @@ GET_DOCUMENT_SECTION_TOOL = {
     },
 }
 
-MAX_TOOL_ITERATIONS = 8
+FIND_REPLACE_DOCUMENT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "find_replace_document",
+        "description": (
+            "Global find-and-replace across the entire uploaded document. "
+            "Use this for bulk changes like renaming a character, fixing a recurring "
+            "typo, or replacing a word/phrase throughout. Much faster than editing "
+            "individual sections. Case-insensitive by default."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "find": {
+                    "type": "string",
+                    "description": "The exact text to find (e.g. a character name, word, or phrase).",
+                },
+                "replace": {
+                    "type": "string",
+                    "description": "The replacement text.",
+                },
+            },
+            "required": ["find", "replace"],
+        },
+    },
+}
+
+MAX_TOOL_ITERATIONS = 256
 
 SYSTEM_PROMPT_TEMPLATE = """Your name is {agent_name}. Always refer to yourself as {agent_name} when asked your name or when introducing yourself.
 
@@ -253,10 +292,16 @@ You have access to these tools:
 When the user uploads a document and asks you to edit, revise, or modify it:
 - For SMALL documents: you have the full content in context. Use create_document with the entire edited text.
 - For LARGE documents (screenplays, long texts): you have a TABLE OF CONTENTS showing numbered sections.
-  Use get_document_section to read a section, then edit_document_section to edit it.
-  Each edit_document_section call surgically updates just that section in the original file.
-  You can make multiple section edits in sequence. After editing, a download link is provided automatically.
-  NEVER try to output the entire large document via create_document — it will fail.
+  Tools available:
+  * find_replace_document: For simple renames or word substitutions across the ENTIRE document (e.g.
+    "change Ken to Ophelia"). One call handles everything. Use this first when the edit is a straightforward
+    text replacement.
+  * get_document_section + edit_document_section: For creative edits that require rewriting content.
+    Read 4-5 sections, then edit ALL 4-5 of those sections before moving on. You MUST
+    edit every section you read. Then continue to the next batch. Each edit accumulates
+    into the same file. Do NOT stop between batches — continue until every relevant section
+    is edited. Only show the download link after all edits are complete.
+  * NEVER try to output the entire large document via create_document — it will fail.
 
 Do not search for things you can answer confidently from your own knowledge.
 When you use search results or fetched content, briefly cite the source.
@@ -268,13 +313,31 @@ Ask one thoughtful follow-up question when appropriate.
 Write as if speaking to a founder or philosopher, not a casual user."""
 
 
-@router.post("", response_model=ChatResponse)
-async def chat(
-    body: ChatRequest,
-    user_id: uuid.UUID = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
-):
-    """Send a text message and get a RAG-augmented LLM response."""
+# ---------------------------------------------------------------------------
+# Shared helpers for chat and streaming endpoints
+# ---------------------------------------------------------------------------
+
+def _sse_event(data: dict) -> str:
+    """Format a dict as an SSE data line."""
+    return f"data: {json.dumps(data)}\n\n"
+
+
+def _section_heading(uploaded_docs, section_index: int) -> str:
+    """Look up the heading for a section index from uploaded docs."""
+    for doc in uploaded_docs:
+        if doc.sections_json and 0 <= section_index < len(doc.sections_json):
+            return doc.sections_json[section_index].get("heading", "")
+    return ""
+
+
+async def _prepare_chat(
+    user_id: uuid.UUID, body: ChatRequest, db: AsyncSession,
+) -> dict:
+    """Build conversation context, LLM messages, and call kwargs.
+
+    Returns dict with keys: conversation, conv_id, messages, uploaded_docs,
+    has_sectioned_docs, client, llm_kwargs.
+    """
     # Resolve or create conversation
     conv_id: uuid.UUID | None = None
     if body.conversation_id:
@@ -291,7 +354,6 @@ async def chat(
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
     else:
-        # Auto-create a new conversation titled from the first message
         title = body.message[:100].strip() or "New Chat"
         conversation = Conversation(user_id=user_id, title=title)
         db.add(conversation)
@@ -394,14 +456,14 @@ async def chat(
 
     messages.append({"role": "user", "content": body.message})
 
-    # Call LLM with tool-calling loop
+    # Build LLM call kwargs
     client = _get_llm_client()
     model = user_settings.llm_model
     _restricted = model.startswith("gpt-5") or model.startswith("o")
 
     tools = [WEB_SEARCH_TOOL, WEB_FETCH_TOOL, CREATE_DOCUMENT_TOOL]
     if has_sectioned_docs:
-        tools.extend([EDIT_DOCUMENT_SECTION_TOOL, GET_DOCUMENT_SECTION_TOOL])
+        tools.extend([EDIT_DOCUMENT_SECTION_TOOL, GET_DOCUMENT_SECTION_TOOL, FIND_REPLACE_DOCUMENT_TOOL])
     llm_kwargs: dict = {
         "model": model,
         "messages": messages,
@@ -417,7 +479,7 @@ async def chat(
     effective_max_tokens = user_settings.llm_max_tokens
     if uploaded_docs:
         if has_sectioned_docs:
-            # Sectioned: LLM emits one edited scene (~4K chars ≈ 1200 tokens)
+            # Sectioned: LLM emits one edited scene (~4K chars ~ 1200 tokens)
             # inside a tool call JSON wrapper, plus reasoning. 8192 gives headroom.
             doc_token_floor = 8192
         else:
@@ -442,6 +504,170 @@ async def chat(
         model, effective_max_tokens, has_sectioned_docs, len(tools),
     )
 
+    return {
+        "conversation": conversation,
+        "conv_id": conv_id,
+        "messages": messages,
+        "uploaded_docs": uploaded_docs,
+        "has_sectioned_docs": has_sectioned_docs,
+        "client": client,
+        "llm_kwargs": llm_kwargs,
+    }
+
+
+async def _execute_tool_call(
+    tool_call, uploaded_docs: list, user_id: uuid.UUID, db: AsyncSession,
+) -> tuple[str, list[str]]:
+    """Execute a single LLM tool call.
+
+    Returns (result_text, progress_messages).
+    """
+    args = json.loads(tool_call.function.arguments)
+    name = tool_call.function.name
+    progress: list[str] = []
+
+    if name == "web_search":
+        query = args.get("query", "")
+        logger.info(f"LLM invoked web_search for user {user_id}: {query!r}")
+        progress.append(f"Searching: {query}")
+        result = await web_search(query)
+
+    elif name == "web_fetch":
+        url = args.get("url", "")
+        logger.info(f"LLM invoked web_fetch for user {user_id}: {url!r}")
+        progress.append(f"Fetching: {url}")
+        result = await web_fetch(url)
+
+    elif name == "create_document":
+        doc_filename = args.get("filename", "document.txt")
+        doc_content = args.get("content", "")
+        logger.info(f"LLM invoked create_document for user {user_id}: {doc_filename!r}")
+        progress.append(f"Creating document: {doc_filename}")
+        try:
+            # Try format-preserving edit from uploaded original
+            doc_bytes = None
+            out_ext = _get_extension(doc_filename)
+            if uploaded_docs and out_ext:
+                # Find most recent uploaded doc with same extension
+                for udoc in reversed(uploaded_docs):
+                    if _get_extension(udoc.filename) == out_ext and udoc.original_bytes:
+                        doc_bytes = edit_preserving_format(
+                            udoc.original_bytes, udoc.filename, doc_content,
+                        )
+                        if doc_bytes:
+                            logger.info("Used format-preserving edit from %r", udoc.filename)
+                        break
+            if doc_bytes is None:
+                doc_bytes = generate_document(doc_filename, doc_content)
+            doc_id = store_document(user_id, doc_filename, doc_bytes)
+            download_url = f"/api/documents/download/{doc_id}"
+            result = (
+                f"Document created successfully. "
+                f"Include this exact markdown link in your response for the user to download it:\n"
+                f"[Download {doc_filename}]({download_url})"
+            )
+        except Exception as e:
+            logger.error(f"create_document failed for {doc_filename!r}: {e}", exc_info=True)
+            result = f"Failed to create document: {e}"
+
+    elif name == "get_document_section":
+        sec_idx = args.get("section_index", 0)
+        heading = _section_heading(uploaded_docs, sec_idx)
+        logger.info(f"LLM invoked get_document_section for user {user_id}: section {sec_idx}")
+        result = _handle_get_section(uploaded_docs, sec_idx)
+        progress.append(f"Reading section {sec_idx}: {heading}")
+
+    elif name == "edit_document_section":
+        sec_idx = args.get("section_index", 0)
+        heading = _section_heading(uploaded_docs, sec_idx)
+        logger.info(f"LLM invoked edit_document_section for user {user_id}: section {sec_idx}")
+        result = await _handle_edit_section(
+            db, uploaded_docs, sec_idx, args.get("new_content", ""), user_id,
+        )
+        # Use updated heading after edit (sections may have been re-indexed)
+        new_heading = _section_heading(uploaded_docs, sec_idx) or heading
+        progress.append(f"Edited section {sec_idx}: {new_heading}")
+
+    elif name == "find_replace_document":
+        find_str = args.get("find", "")
+        replace_str = args.get("replace", "")
+        logger.info(f"LLM invoked find_replace_document for user {user_id}: {find_str!r} -> {replace_str!r}")
+        result = await _handle_find_replace(
+            db, uploaded_docs, find_str, replace_str, user_id,
+        )
+        progress.append(f"Replaced '{find_str}' with '{replace_str}'")
+
+    else:
+        result = f"Unknown tool: {name}"
+
+    return result, progress
+
+
+def _last_download_link(messages: list) -> str | None:
+    """Scan tool results for the most recent download link."""
+    for msg in reversed(messages):
+        content = None
+        if isinstance(msg, dict) and msg.get("role") == "tool":
+            content = msg.get("content", "")
+        if content:
+            match = re.search(r"\[Download .+?\]\((/api/documents/download/[^)]+)\)", content)
+            if match:
+                return match.group(0)  # full markdown link
+    return None
+
+
+async def _finalize_chat(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    user_message: str,
+    assistant_content: str,
+    conversation,
+    conv_id: uuid.UUID,
+    client: AsyncOpenAI,
+):
+    """Save messages, update conversation summary, embed exchange, and commit."""
+    user_msg = Message(
+        user_id=user_id, role="user", content=user_message,
+        source=MessageSource.TEXT, conversation_id=conv_id,
+    )
+    assistant_msg = Message(
+        user_id=user_id, role="assistant", content=assistant_content,
+        source=MessageSource.TEXT, conversation_id=conv_id,
+    )
+    db.add(user_msg)
+    db.add(assistant_msg)
+
+    conversation.updated_at = datetime.now(timezone.utc)
+    conversation.summary = await _generate_summary(
+        client, user_message, assistant_content, conversation.summary,
+    )
+
+    exchange_text = f"User: {user_message}\nAssistant: {assistant_content}"
+    embedding = await embed_text(exchange_text)
+    await store_embedding(db, user_id, exchange_text, embedding)
+
+    await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+
+@router.post("", response_model=ChatResponse)
+async def chat(
+    body: ChatRequest,
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Send a text message and get a RAG-augmented LLM response."""
+    ctx = await _prepare_chat(user_id, body, db)
+    conversation = ctx["conversation"]
+    conv_id = ctx["conv_id"]
+    messages = ctx["messages"]
+    uploaded_docs = ctx["uploaded_docs"]
+    client = ctx["client"]
+    llm_kwargs = ctx["llm_kwargs"]
+
     assistant_content = None
     for iteration in range(MAX_TOOL_ITERATIONS):
         try:
@@ -459,70 +685,16 @@ async def chat(
         )
 
         if choice.finish_reason == "length":
-            # Output was truncated — tool call or content is incomplete.
-            # If the LLM was trying to generate a tool call, the JSON is
-            # likely malformed.  Break out and return whatever content exists.
             logger.warning("LLM output truncated (finish_reason=length) on iteration %d", iteration)
             assistant_content = choice.message.content
             break
 
         if choice.finish_reason == "tool_calls" and choice.message.tool_calls:
-            # Append the assistant message with tool calls
             messages.append(choice.message)
-
             for tool_call in choice.message.tool_calls:
-                args = json.loads(tool_call.function.arguments)
-                if tool_call.function.name == "web_search":
-                    query = args.get("query", "")
-                    logger.info(f"LLM invoked web_search for user {user_id}: {query!r}")
-                    result = await web_search(query)
-                elif tool_call.function.name == "web_fetch":
-                    url = args.get("url", "")
-                    logger.info(f"LLM invoked web_fetch for user {user_id}: {url!r}")
-                    result = await web_fetch(url)
-                elif tool_call.function.name == "create_document":
-                    doc_filename = args.get("filename", "document.txt")
-                    doc_content = args.get("content", "")
-                    logger.info(f"LLM invoked create_document for user {user_id}: {doc_filename!r}")
-                    try:
-                        # Try format-preserving edit from uploaded original
-                        doc_bytes = None
-                        out_ext = _get_extension(doc_filename)
-                        if uploaded_docs and out_ext:
-                            # Find most recent uploaded doc with same extension
-                            for udoc in reversed(uploaded_docs):
-                                if _get_extension(udoc.filename) == out_ext and udoc.original_bytes:
-                                    doc_bytes = edit_preserving_format(
-                                        udoc.original_bytes, udoc.filename, doc_content,
-                                    )
-                                    if doc_bytes:
-                                        logger.info("Used format-preserving edit from %r", udoc.filename)
-                                    break
-                        if doc_bytes is None:
-                            doc_bytes = generate_document(doc_filename, doc_content)
-                        doc_id = store_document(user_id, doc_filename, doc_bytes)
-                        download_url = f"/api/documents/download/{doc_id}"
-                        result = (
-                            f"Document created successfully. "
-                            f"Include this exact markdown link in your response for the user to download it:\n"
-                            f"[Download {doc_filename}]({download_url})"
-                        )
-                    except Exception as e:
-                        logger.error(f"create_document failed for {doc_filename!r}: {e}", exc_info=True)
-                        result = f"Failed to create document: {e}"
-                elif tool_call.function.name == "get_document_section":
-                    sec_idx = args.get("section_index", 0)
-                    logger.info(f"LLM invoked get_document_section for user {user_id}: section {sec_idx}")
-                    result = _handle_get_section(uploaded_docs, sec_idx)
-                elif tool_call.function.name == "edit_document_section":
-                    sec_idx = args.get("section_index", 0)
-                    new_sec_content = args.get("new_content", "")
-                    logger.info(f"LLM invoked edit_document_section for user {user_id}: section {sec_idx}")
-                    result = await _handle_edit_section(
-                        db, uploaded_docs, sec_idx, new_sec_content, user_id,
-                    )
-                else:
-                    result = f"Unknown tool: {tool_call.function.name}"
+                result, _ = await _execute_tool_call(
+                    tool_call, uploaded_docs, user_id, db,
+                )
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call.id,
@@ -539,34 +711,126 @@ async def chat(
 
     if assistant_content is None:
         logger.warning("Tool loop exhausted after %d iterations with no content", MAX_TOOL_ITERATIONS)
-        assistant_content = "I'm sorry, I wasn't able to complete that request. Please try again."
+        download_link = _last_download_link(messages)
+        if download_link:
+            assistant_content = (
+                "I ran into an issue and couldn't finish editing all sections, "
+                "but here's the file with the edits completed so far:\n\n"
+                f"{download_link}\n\n"
+                "You can ask me to continue editing from where I left off."
+            )
+        else:
+            assistant_content = "I'm sorry, I wasn't able to complete that request. Please try again."
 
-    # Store both messages in conversation history
-    user_msg = Message(
-        user_id=user_id, role="user", content=body.message,
-        source=MessageSource.TEXT, conversation_id=conv_id,
+    await _finalize_chat(
+        db, user_id, body.message, assistant_content, conversation, conv_id, client,
     )
-    assistant_msg = Message(
-        user_id=user_id, role="assistant", content=assistant_content,
-        source=MessageSource.TEXT, conversation_id=conv_id,
-    )
-    db.add(user_msg)
-    db.add(assistant_msg)
-
-    # Bump conversation updated_at and generate summary
-    conversation.updated_at = datetime.now(timezone.utc)
-    conversation.summary = await _generate_summary(
-        client, body.message, assistant_content, conversation.summary,
-    )
-
-    # Embed the exchange for future RAG retrieval
-    exchange_text = f"User: {body.message}\nAssistant: {assistant_content}"
-    embedding = await embed_text(exchange_text)
-    await store_embedding(db, user_id, exchange_text, embedding)
-
-    await db.commit()
 
     return ChatResponse(response=assistant_content, conversation_id=str(conv_id))
+
+
+async def _chat_stream(
+    user_id: uuid.UUID, body: ChatRequest, db: AsyncSession,
+):
+    """Async generator yielding SSE events during the chat tool loop."""
+    try:
+        ctx = await _prepare_chat(user_id, body, db)
+    except HTTPException as e:
+        yield _sse_event({"type": "error", "message": e.detail})
+        return
+
+    conversation = ctx["conversation"]
+    conv_id = ctx["conv_id"]
+    messages = ctx["messages"]
+    uploaded_docs = ctx["uploaded_docs"]
+    client = ctx["client"]
+    llm_kwargs = ctx["llm_kwargs"]
+
+    assistant_content = None
+    for iteration in range(MAX_TOOL_ITERATIONS):
+        try:
+            completion = await client.chat.completions.create(**llm_kwargs)
+        except Exception as e:
+            logger.error("LLM API call failed on iteration %d: %s", iteration, e)
+            break
+        choice = completion.choices[0]
+        logger.info(
+            "LLM iteration %d: finish_reason=%s, has_tool_calls=%s, has_content=%s, content_len=%s",
+            iteration, choice.finish_reason,
+            bool(choice.message.tool_calls),
+            choice.message.content is not None,
+            len(choice.message.content) if choice.message.content else 0,
+        )
+
+        if choice.finish_reason == "length":
+            logger.warning("LLM output truncated (finish_reason=length) on iteration %d", iteration)
+            assistant_content = choice.message.content
+            break
+
+        if choice.finish_reason == "tool_calls" and choice.message.tool_calls:
+            messages.append(choice.message)
+            for tool_call in choice.message.tool_calls:
+                result, progress_msgs = await _execute_tool_call(
+                    tool_call, uploaded_docs, user_id, db,
+                )
+                for msg in progress_msgs:
+                    yield _sse_event({"type": "progress", "message": msg})
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": result,
+                })
+        else:
+            assistant_content = choice.message.content
+            if assistant_content is None:
+                logger.warning(
+                    "LLM returned finish_reason=%s with no content on iteration %d",
+                    choice.finish_reason, iteration,
+                )
+            break
+
+    if assistant_content is None:
+        logger.warning("Tool loop exhausted after %d iterations with no content", MAX_TOOL_ITERATIONS)
+        download_link = _last_download_link(messages)
+        if download_link:
+            assistant_content = (
+                "I ran into an issue and couldn't finish editing all sections, "
+                "but here's the file with the edits completed so far:\n\n"
+                f"{download_link}\n\n"
+                "You can ask me to continue editing from where I left off."
+            )
+        else:
+            assistant_content = "I'm sorry, I wasn't able to complete that request. Please try again."
+
+    try:
+        await _finalize_chat(
+            db, user_id, body.message, assistant_content, conversation, conv_id, client,
+        )
+    except Exception as e:
+        logger.error("Failed to finalize streamed chat: %s", e)
+        yield _sse_event({"type": "error", "message": "Failed to save conversation"})
+        return
+
+    yield _sse_event({"type": "content", "text": assistant_content})
+    yield _sse_event({"type": "done", "conversation_id": str(conv_id)})
+
+
+@router.post("/stream")
+async def chat_stream(
+    body: ChatRequest,
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Send a text message and stream progress + response as SSE events."""
+    return StreamingResponse(
+        _chat_stream(user_id, body, db),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/history", response_model=list[MessageOut])
@@ -678,55 +942,137 @@ async def _handle_edit_section(
 ) -> str:
     """Handle the edit_document_section tool call.
 
-    Surgically edits one section of the FDX, re-indexes sections, stores the
-    updated bytes, and returns a download link.
+    Surgically edits one section and re-indexes.  Dispatches by file format:
+    FDX uses XML-level editing, TXT/MD uses paragraph splicing, DOCX/PDF
+    uses extract→splice→edit_preserving_format.
     """
     for doc in uploaded_docs:
         if not doc.sections_json or not doc.original_bytes:
             continue
 
         ext = _get_extension(doc.filename)
+
+        # --- Dispatch editing by format ---
         if ext == ".fdx":
             edited_bytes = edit_fdx_section(
                 doc.original_bytes, doc.sections_json, section_index, new_content,
             )
-            if edited_bytes is None:
-                return f"Failed to edit section {section_index}. Check the section index and try again."
-
-            # Re-index sections from the edited bytes
-            new_sections = split_fdx_into_scenes(edited_bytes)
-
-            # Update the ConversationDocument in-place so subsequent edits
-            # in the same request use the updated bytes and ranges
-            doc.original_bytes = edited_bytes
-            doc.sections_json = new_sections
-
-            # Also update extracted text content
-            from document.parser import extract_text as _extract
-            try:
-                doc.content = await _extract(doc.filename, edited_bytes)
-            except Exception:
-                pass  # non-critical; original_bytes is the source of truth
-
-            # Store for download
-            doc_id = store_document(user_id, doc.filename, edited_bytes)
-            download_url = f"/api/documents/download/{doc_id}"
-
-            sect_heading = ""
-            if 0 <= section_index < len(doc.sections_json):
-                sect_heading = doc.sections_json[section_index].get("heading", "")
-
-            return (
-                f"Section [{section_index}] ({sect_heading}) edited successfully. "
-                f"All edits are accumulated in the same file. "
-                f"If you have MORE sections to edit, do those next BEFORE showing a download link. "
-                f"Only after ALL edits are done, include this exact markdown link in your final response:\n"
-                f"[Download {doc.filename}]({download_url})"
+            re_split_fn = split_fdx_into_scenes
+        elif ext in (".txt", ".md"):
+            edited_bytes = edit_text_section(
+                doc.original_bytes, doc.sections_json, section_index, new_content,
             )
+            re_split_fn = lambda b: split_large_text(b.decode("utf-8", errors="replace"))
+        elif ext == ".docx":
+            edited_bytes = edit_docx_section(
+                doc.original_bytes, doc.sections_json, section_index, new_content,
+            )
+            re_split_fn = lambda b: split_large_text(extract_text_sync(doc.filename, b))
+        elif ext == ".pdf":
+            edited_bytes = edit_rich_section(
+                doc.original_bytes, doc.filename, doc.sections_json,
+                section_index, new_content, extract_text_sync,
+            )
+            re_split_fn = lambda b: split_large_text(extract_text_sync(doc.filename, b))
         else:
-            return f"Section editing is currently supported for FDX files only. Use create_document for {ext} files."
+            return f"Unsupported format for section editing: {ext}"
+
+        if edited_bytes is None:
+            return f"Failed to edit section {section_index}. Check the section index and try again."
+
+        # Re-index sections from the edited bytes
+        new_sections = re_split_fn(edited_bytes)
+
+        # Update the ConversationDocument in-place so subsequent edits
+        # in the same request use the updated bytes and ranges
+        doc.original_bytes = edited_bytes
+        doc.sections_json = new_sections
+
+        # Also update extracted text content
+        from document.parser import extract_text as _extract
+        try:
+            doc.content = await _extract(doc.filename, edited_bytes)
+        except Exception:
+            pass  # non-critical; original_bytes is the source of truth
+
+        # Store for download
+        doc_id = store_document(user_id, doc.filename, edited_bytes)
+        download_url = f"/api/documents/download/{doc_id}"
+
+        sect_heading = ""
+        if 0 <= section_index < len(doc.sections_json):
+            sect_heading = doc.sections_json[section_index].get("heading", "")
+
+        return (
+            f"Section [{section_index}] ({sect_heading}) edited successfully. "
+            f"All edits are accumulated in the same file. "
+            f"If you have MORE sections to edit, do those next BEFORE showing a download link. "
+            f"Only after ALL edits are done, include this exact markdown link in your final response:\n"
+            f"[Download {doc.filename}]({download_url})"
+        )
 
     return "No sectioned document found in this conversation."
+
+
+async def _handle_find_replace(
+    db, uploaded_docs: list, find: str, replace: str, user_id,
+) -> str:
+    """Handle the find_replace_document tool call.
+
+    Dispatches by file format: FDX uses XML-level replacement, TXT/MD uses
+    regex on decoded text, DOCX/PDF uses extract→replace→edit_preserving_format.
+    """
+    for doc in uploaded_docs:
+        if not doc.original_bytes:
+            continue
+
+        ext = _get_extension(doc.filename)
+
+        # --- Dispatch find-replace by format ---
+        if ext == ".fdx":
+            result = find_replace_fdx(doc.original_bytes, find, replace)
+            re_split_fn = split_fdx_into_scenes
+        elif ext in (".txt", ".md"):
+            result = find_replace_text(doc.original_bytes, find, replace)
+            re_split_fn = lambda b: split_large_text(b.decode("utf-8", errors="replace"))
+        elif ext == ".docx":
+            result = find_replace_docx(doc.original_bytes, find, replace)
+            re_split_fn = lambda b: split_large_text(extract_text_sync(doc.filename, b))
+        elif ext == ".pdf":
+            result = find_replace_rich(
+                doc.original_bytes, doc.filename, find, replace,
+                extract_fn=extract_text_sync,
+            )
+            re_split_fn = lambda b: split_large_text(extract_text_sync(doc.filename, b))
+        else:
+            return f"Unsupported format for find-and-replace: {ext}"
+
+        if result is None:
+            return f"No occurrences of {find!r} found in the document."
+
+        edited_bytes, count = result
+
+        # Re-index sections and update the document record
+        if doc.sections_json:
+            doc.sections_json = re_split_fn(edited_bytes)
+        doc.original_bytes = edited_bytes
+
+        from document.parser import extract_text as _extract
+        try:
+            doc.content = await _extract(doc.filename, edited_bytes)
+        except Exception:
+            pass
+
+        doc_id = store_document(user_id, doc.filename, edited_bytes)
+        download_url = f"/api/documents/download/{doc_id}"
+
+        return (
+            f"Replaced {count} occurrence(s) of {find!r} with {replace!r} throughout the document. "
+            f"Include this exact markdown link in your response:\n"
+            f"[Download {doc.filename}]({download_url})"
+        )
+
+    return "No document with original bytes found in this conversation."
 
 
 def _get_extension(filename: str) -> str:

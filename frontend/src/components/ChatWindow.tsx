@@ -126,10 +126,10 @@ export default function ChatWindow({
             <p>Start a conversation...</p>
           </div>
         )}
-        {messages.map((msg) => (
-          <MessageBubble key={msg.id} message={msg} />
-        ))}
-        {loading && (
+        {messages.map((msg) =>
+          msg.content ? <MessageBubble key={msg.id} message={msg} /> : null,
+        )}
+        {loading && (!messages.length || messages[messages.length - 1].role !== "assistant" || !messages[messages.length - 1].content) && (
           <div className="flex justify-start mb-3">
             <div className="bg-gray-100 rounded-2xl px-4 py-2.5">
               <div className="flex gap-1">

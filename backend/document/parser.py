@@ -13,6 +13,39 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff", "
 ALLOWED_EXTENSIONS = {".txt", ".md", ".pdf", ".docx", ".xlsx", ".csv", ".fdx"} | IMAGE_EXTENSIONS
 
 
+def extract_text_sync(filename: str, content: bytes) -> str:
+    """Synchronous version of extract_text for use in editor.
+
+    The async extract_text() contains no actual async calls — it just
+    dispatches to sync helpers.  This exposes the same logic without
+    requiring an event loop.
+    """
+    ext = _get_extension(filename)
+
+    if ext in (".txt", ".md"):
+        return content.decode("utf-8", errors="replace")
+
+    if ext == ".pdf":
+        return _extract_pdf(content)
+
+    if ext == ".docx":
+        return _extract_docx(content)
+
+    if ext == ".xlsx":
+        return _extract_xlsx(content)
+
+    if ext == ".csv":
+        return _extract_csv(content)
+
+    if ext == ".fdx":
+        return _extract_fdx(content)
+
+    raise ValueError(
+        f"Unsupported file type: {ext}. "
+        f"Allowed types: {', '.join(sorted(ALLOWED_EXTENSIONS))}"
+    )
+
+
 async def extract_text(filename: str, content: bytes) -> str:
     """Extract plain text from a file based on its extension.
 
