@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from auth.jwt import get_current_user_id
 from config import settings
 from document.parser import extract_text, ALLOWED_EXTENSIONS, IMAGE_EXTENSIONS
+from document.scene_splitter import split_fdx_into_scenes, split_large_text
 from document.store import get_document, store_document
 from document.vision import analyze_image
 from document.chunker import chunk_text
@@ -126,6 +127,20 @@ async def upload_document(
         await db.flush()
         conv_id = conversation.id
 
+    # Split large documents into sections for chunked editing
+    sections_json = None
+    if len(extracted) > 20000:
+        ext = _get_extension(filename)
+        if ext == ".fdx":
+            sections_json = split_fdx_into_scenes(content)
+        else:
+            sections_json = split_large_text(extracted)
+        if sections_json:
+            logger.info(
+                "Document '%s' split into %d sections for chunked editing",
+                filename, len(sections_json),
+            )
+
     # Store full document text + original bytes scoped to this conversation
     if conv_id is not None:
         doc_record = ConversationDocument(
@@ -134,6 +149,7 @@ async def upload_document(
             filename=filename,
             content=extracted,
             original_bytes=content,
+            sections_json=sections_json,
         )
         db.add(doc_record)
 

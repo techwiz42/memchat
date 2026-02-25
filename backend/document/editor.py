@@ -219,7 +219,104 @@ def _apply_replacements_to_docx(
 
 
 # ---------------------------------------------------------------------------
-# FDX editing (Final Draft screenplay XML)
+# FDX section editing (surgical single-scene replacement)
+# ---------------------------------------------------------------------------
+
+def edit_fdx_section(
+    original_bytes: bytes,
+    sections_json: list[dict],
+    section_index: int,
+    new_content: str,
+) -> bytes | None:
+    """Surgically replace paragraphs in one scene of an FDX file.
+
+    Uses the xml_para_start:xml_para_end range from sections_json to identify
+    the target paragraphs, then applies the SequenceMatcher approach only to
+    that range while leaving all other scenes untouched.
+
+    Returns the edited FDX bytes, or None on failure.
+    """
+    if section_index < 0 or section_index >= len(sections_json):
+        logger.warning("edit_fdx_section: invalid section_index %d", section_index)
+        return None
+
+    try:
+        root = ET.fromstring(original_bytes)
+    except ET.ParseError:
+        logger.warning("edit_fdx_section: failed to parse FDX XML")
+        return None
+
+    content_el = root.find("Content")
+    if content_el is None:
+        return None
+
+    paragraphs = list(content_el.findall("Paragraph"))
+    section = sections_json[section_index]
+    para_start = section["xml_para_start"]
+    para_end = section["xml_para_end"]
+
+    # Clamp range to actual paragraph count
+    para_start = max(0, min(para_start, len(paragraphs)))
+    para_end = max(para_start, min(para_end, len(paragraphs)))
+
+    # Extract original paragraph texts in the target range
+    orig_range = paragraphs[para_start:para_end]
+    orig_texts_lower = []
+    for p in orig_range:
+        texts = []
+        for t in p.iter("Text"):
+            if t.text:
+                texts.append(t.text)
+        orig_texts_lower.append("".join(texts).strip().lower())
+
+    # Parse new content into lines
+    new_lines = [line.strip() for line in new_content.splitlines() if line.strip()]
+    new_lower = [line.lower() for line in new_lines]
+
+    # Use SequenceMatcher to align original paragraphs with new text
+    matcher = SequenceMatcher(None, orig_texts_lower, new_lower)
+    new_paras: list[ET.Element] = []
+
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            for idx in range(i1, i2):
+                new_paras.append(orig_range[idx])
+        elif tag == "replace":
+            orig_slice = list(range(i1, i2))
+            new_slice = list(range(j1, j2))
+            for k, j_idx in enumerate(new_slice):
+                if k < len(orig_slice):
+                    para_el = orig_range[orig_slice[k]]
+                    _set_paragraph_text(para_el, new_lines[j_idx])
+                    new_paras.append(para_el)
+                else:
+                    new_paras.append(_make_paragraph("Action", new_lines[j_idx]))
+        elif tag == "insert":
+            for j_idx in range(j1, j2):
+                new_paras.append(_make_paragraph("Action", new_lines[j_idx]))
+        elif tag == "delete":
+            pass  # lines removed by the edit
+
+    # Rebuild Content: paragraphs before section + edited + paragraphs after
+    new_content_el = ET.Element("Content")
+    for p in paragraphs[:para_start]:
+        new_content_el.append(p)
+    for p in new_paras:
+        new_content_el.append(p)
+    for p in paragraphs[para_end:]:
+        new_content_el.append(p)
+
+    root.remove(content_el)
+    root.append(new_content_el)
+
+    buf = io.BytesIO()
+    tree = ET.ElementTree(root)
+    tree.write(buf, encoding="utf-8", xml_declaration=True)
+    return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# FDX editing (Final Draft screenplay XML) — full document
 # ---------------------------------------------------------------------------
 
 def _edit_fdx(original_bytes: bytes, new_text: str) -> bytes | None:

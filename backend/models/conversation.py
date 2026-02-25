@@ -4,7 +4,7 @@ import enum
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import LargeBinary, String, Text, DateTime, Enum, ForeignKey, text
+from sqlalchemy import JSON, LargeBinary, String, Text, DateTime, Enum, ForeignKey, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -76,6 +76,7 @@ class ConversationDocument(Base):
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     original_bytes: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    sections_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

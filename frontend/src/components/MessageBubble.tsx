@@ -60,6 +60,17 @@ export default function MessageBubble({ message }: Props) {
     []
   );
 
+  // react-markdown v10 sanitizes URLs by default, stripping unknown schemes
+  // like "sandbox:" that the LLM sometimes hallucinates onto our download paths.
+  // We need to preserve /api/documents/download/ URLs regardless of prefix.
+  const urlTransform = useCallback((url: string) => {
+    const dlIdx = url.indexOf(DOWNLOAD_PATH_PREFIX);
+    if (dlIdx !== -1) {
+      return url.slice(dlIdx); // strip any prefix, keep the download path
+    }
+    return url; // let react-markdown handle other URLs normally
+  }, []);
+
   const markdownComponents: Components = {
     a: ({ href, children, ...props }) => {
       // Normalize href: strip scheme prefixes the LLM may hallucinate (e.g. "sandbox:")
@@ -126,7 +137,7 @@ export default function MessageBubble({ message }: Props) {
             <p className="whitespace-pre-wrap text-sm">{textContent}</p>
           ) : (
             <div className="prose prose-sm max-w-none prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-headings:my-2 prose-pre:my-2 prose-code:text-inherit prose-code:before:content-none prose-code:after:content-none">
-              <ReactMarkdown components={markdownComponents}>{textContent}</ReactMarkdown>
+              <ReactMarkdown components={markdownComponents} urlTransform={urlTransform}>{textContent}</ReactMarkdown>
             </div>
           )
         )}
