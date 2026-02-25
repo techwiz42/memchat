@@ -3,7 +3,7 @@
 import { useCallback } from "react";
 import ReactMarkdown, { Components } from "react-markdown";
 import { ChatMessage } from "@/hooks/useChat";
-import { getAccessToken } from "@/lib/auth";
+import { getAccessToken, refreshAccessToken } from "@/lib/auth";
 
 interface Props {
   message: ChatMessage;
@@ -17,10 +17,21 @@ const DOWNLOAD_PATH_PREFIX = "/api/documents/download/";
  * a browser download from the resulting blob.
  */
 async function authenticatedDownload(href: string) {
-  const token = getAccessToken();
-  const res = await fetch(href, {
+  let token = getAccessToken();
+  let res = await fetch(href, {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
+
+  // If 401, try refreshing the token and retry once
+  if (res.status === 401) {
+    const newToken = await refreshAccessToken();
+    if (newToken) {
+      res = await fetch(href, {
+        headers: { Authorization: `Bearer ${newToken}` },
+      });
+    }
+  }
+
   if (!res.ok) {
     throw new Error(`Download failed: ${res.status}`);
   }

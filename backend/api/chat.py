@@ -718,7 +718,9 @@ async def _handle_edit_section(
 
             return (
                 f"Section [{section_index}] ({sect_heading}) edited successfully. "
-                f"Include this exact markdown link in your response for the user to download it:\n"
+                f"All edits are accumulated in the same file. "
+                f"If you have MORE sections to edit, do those next BEFORE showing a download link. "
+                f"Only after ALL edits are done, include this exact markdown link in your final response:\n"
                 f"[Download {doc.filename}]({download_url})"
             )
         else:
