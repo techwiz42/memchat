@@ -34,3 +34,24 @@ async def embed_text(text: str) -> list[float]:
         dimensions=settings.embedding_dimensions,
     )
     return response.data[0].embedding
+
+
+async def embed_texts(texts: list[str]) -> list[list[float]]:
+    """Batch-generate embedding vectors for multiple texts in one API call.
+
+    Args:
+        texts: List of texts to embed.
+
+    Returns:
+        List of embedding vectors, one per input text, in the same order.
+    """
+    if not texts:
+        return []
+    client = _get_client()
+    response = await client.embeddings.create(
+        model=settings.embedding_model,
+        input=texts,
+        dimensions=settings.embedding_dimensions,
+    )
+    # OpenAI returns embeddings in the same order as input
+    return [item.embedding for item in response.data]

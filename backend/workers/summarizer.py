@@ -10,13 +10,12 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from openai import AsyncOpenAI
-from sqlalchemy import select, func
+from sqlalchemy import select, text
 
 from config import settings
 from memory.embeddings import embed_text
 from memory.vector_store import MemoryEmbedding, get_old_embeddings, delete_embeddings, store_embedding
 from models.base import async_session_factory
-from models.user import User
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +79,7 @@ async def _summarize_user_memories(user_id) -> int:
                 summary_embedding = await embed_text(summary)
                 await store_embedding(db, user_id, f"[Summary] {summary}", summary_embedding)
                 await delete_embeddings(db, [m.id for m in chunk])
+                await db.commit()
                 total_summarized += len(chunk)
                 logger.info(f"Summarized {len(chunk)} memories for user {user_id}")
             except Exception as e:
@@ -89,11 +89,31 @@ async def _summarize_user_memories(user_id) -> int:
         return total_summarized
 
 
+SUMMARIZER_LOCK_ID = 839271  # arbitrary unique ID for pg_try_advisory_lock
+
+
 async def _run_summarization_cycle():
-    """Run one cycle of summarization across all users."""
+    """Run one cycle of summarization across users with old embeddings.
+
+    Uses a pg advisory lock so only one worker runs this at a time.
+    """
     async with async_session_factory() as db:
-        result = await db.execute(select(User.id))
-        user_ids = [row[0] for row in result.all()]
+        # Try to acquire an advisory lock — skip if another worker holds it
+        lock_result = await db.execute(text(f"SELECT pg_try_advisory_lock({SUMMARIZER_LOCK_ID})"))
+        acquired = lock_result.scalar()
+        if not acquired:
+            return
+
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=SUMMARIZE_AGE_HOURS)
+            result = await db.execute(
+                select(MemoryEmbedding.user_id)
+                .where(MemoryEmbedding.created_at < cutoff)
+                .distinct()
+            )
+            user_ids = [row[0] for row in result.all()]
+        finally:
+            await db.execute(text(f"SELECT pg_advisory_unlock({SUMMARIZER_LOCK_ID})"))
 
     total = 0
     for user_id in user_ids:

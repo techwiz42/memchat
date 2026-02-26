@@ -17,8 +17,8 @@ from document.scene_splitter import split_fdx_into_scenes, split_large_text
 from document.store import get_document, store_document
 from document.vision import analyze_image
 from document.chunker import chunk_text
-from memory.embeddings import embed_text
-from memory.vector_store import store_embedding
+from memory.embeddings import embed_texts
+from memory.vector_store import MemoryEmbedding
 from models import Conversation, ConversationDocument, Message, MessageSource, get_db
 
 logger = logging.getLogger(__name__)
@@ -96,11 +96,14 @@ async def upload_document(
         len(chunks),
     )
 
-    # Embed and store each chunk
-    for i, chunk in enumerate(chunks):
-        chunk_label = f"[Document: {filename} | chunk {i + 1}/{len(chunks)}]\n{chunk}"
-        embedding = await embed_text(chunk_label)
-        await store_embedding(db, user_id, chunk_label, embedding)
+    # Embed all chunks in one batch API call (instead of N sequential calls)
+    chunk_labels = [
+        f"[Document: {filename} | chunk {i + 1}/{len(chunks)}]\n{chunk}"
+        for i, chunk in enumerate(chunks)
+    ]
+    embeddings = await embed_texts(chunk_labels)
+    for label, embedding in zip(chunk_labels, embeddings):
+        db.add(MemoryEmbedding(user_id=user_id, content=label, embedding=embedding))
 
     # Resolve conversation — auto-create if none provided
     conv_id: uuid.UUID | None = None

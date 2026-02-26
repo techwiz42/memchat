@@ -35,6 +35,8 @@ async def store_embedding(
 ) -> MemoryEmbedding:
     """Store a content embedding for a user.
 
+    Does NOT commit — caller is responsible for transaction management.
+
     Args:
         db: Database session.
         user_id: Owner of this memory.
@@ -46,8 +48,6 @@ async def store_embedding(
     """
     record = MemoryEmbedding(user_id=user_id, content=content, embedding=embedding)
     db.add(record)
-    await db.commit()
-    await db.refresh(record)
     return record
 
 
@@ -102,6 +102,8 @@ async def get_old_embeddings(
 async def delete_embeddings(db: AsyncSession, embedding_ids: list[uuid.UUID]) -> None:
     """Delete embeddings by their IDs.
 
+    Does NOT commit — caller is responsible for transaction management.
+
     Args:
         db: Database session.
         embedding_ids: List of embedding record IDs to delete.
@@ -111,4 +113,3 @@ async def delete_embeddings(db: AsyncSession, embedding_ids: list[uuid.UUID]) ->
     await db.execute(
         delete(MemoryEmbedding).where(MemoryEmbedding.id.in_(embedding_ids))
     )
-    await db.commit()

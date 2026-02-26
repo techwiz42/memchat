@@ -63,6 +63,13 @@ async def startup():
                 "CREATE INDEX IF NOT EXISTS ix_messages_conversation_id ON messages (conversation_id)"
             )
         )
+        # HNSW index for fast approximate nearest-neighbor vector search
+        await conn.execute(
+            __import__("sqlalchemy").text(
+                "CREATE INDEX IF NOT EXISTS ix_memory_embeddings_hnsw "
+                "ON memory_embeddings USING hnsw (embedding vector_cosine_ops)"
+            )
+        )
     logger.info("Database tables ready.")
 
     # Start background summarizer

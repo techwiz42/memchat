@@ -5,6 +5,7 @@ POST /api/voice/end    — End session, store transcript
 GET  /api/voice/voices — List available Omnia voices
 """
 
+import asyncio
 import re
 import uuid
 import logging
@@ -20,8 +21,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from auth.jwt import get_current_user_id
 from config import settings
 from memory.embeddings import embed_text
-from memory.vector_store import store_embedding
+from memory.vector_store import MemoryEmbedding
 from models import VoiceSession, VoiceSessionStatus, Message, MessageSource, get_db
+from models.base import async_session_factory
 from api.settings import get_or_create_settings
 from voice.omnia_client import OmniaVoiceClient, OmniaAPIError
 from voice.omnia_config import build_inline_call_config
@@ -212,17 +214,28 @@ async def end_voice_session(
             )
             db.add(msg)
 
-        # Embed full transcript as one chunk for RAG retrieval
-        full_text = f"[Voice conversation transcript]\n{transcript}"
-        embedding = await embed_text(full_text)
-        await store_embedding(db, user_id, full_text, embedding)
-
     await db.commit()
+
+    # Embed transcript in background (don't block the response)
+    if transcript:
+        asyncio.create_task(_background_embed_transcript(user_id, transcript))
 
     # End the Redis session token for this user
     await end_session_by_user(user_id)
 
     return EndVoiceResponse(transcript=transcript, summary=summary)
+
+
+async def _background_embed_transcript(user_id: uuid.UUID, transcript: str):
+    """Background: embed voice transcript into RAG memory."""
+    try:
+        full_text = f"[Voice conversation transcript]\n{transcript}"
+        embedding = await embed_text(full_text)
+        async with async_session_factory() as db:
+            db.add(MemoryEmbedding(user_id=user_id, content=full_text, embedding=embedding))
+            await db.commit()
+    except Exception as e:
+        logger.error("Background voice embedding failed for user %s: %s", user_id, e)
 
 
 @router.get("/voices")

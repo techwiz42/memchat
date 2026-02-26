@@ -20,7 +20,7 @@ from auth.jwt import ALGORITHM
 from config import settings
 from document.vision import analyze_image
 from memory.embeddings import embed_text
-from memory.vector_store import store_embedding
+from memory.vector_store import MemoryEmbedding
 from models import Message, MessageSource
 from models.base import async_session_factory
 from vision.change_detector import (
@@ -91,10 +91,10 @@ async def _analyze_and_send(
             )
             db.add(msg)
 
-            embedding = await embed_text(f"[Vision analysis] {analysis}")
-            await store_embedding(db, user_id, f"[Vision analysis] {analysis}", embedding)
-
             await db.commit()
+
+        # Embed vision analysis in background (don't block the websocket)
+        asyncio.create_task(_background_embed_vision(user_id, analysis))
 
     except WebSocketDisconnect:
         pass  # Client disconnected while we were analyzing
@@ -104,6 +104,18 @@ async def _analyze_and_send(
             await ws.send_json({"type": "error", "message": "Vision analysis failed"})
         except Exception:
             pass
+
+
+async def _background_embed_vision(user_id: uuid.UUID, analysis: str):
+    """Background: embed vision analysis into RAG memory."""
+    try:
+        content = f"[Vision analysis] {analysis}"
+        embedding = await embed_text(content)
+        async with async_session_factory() as db:
+            db.add(MemoryEmbedding(user_id=user_id, content=content, embedding=embedding))
+            await db.commit()
+    except Exception as e:
+        logger.error("Background vision embedding failed for user %s: %s", user_id, e)
 
 
 @router.websocket("/api/vision/stream")

@@ -127,6 +127,7 @@ async def store_memory(
 
     embedding = await embed_text(body.content)
     await store_embedding(db, user_id, body.content, embedding)
+    await db.commit()
 
     return StoreMemoryResponse(status="stored")
 

@@ -1,5 +1,6 @@
 """Text chat endpoint with RAG-augmented LLM responses and web search tool."""
 
+import asyncio
 import json
 import re
 import uuid
@@ -18,8 +19,9 @@ from auth.jwt import get_current_user_id
 from config import settings
 from memory.embeddings import embed_text
 from memory.rag import retrieve_context
-from memory.vector_store import store_embedding
+from memory.vector_store import MemoryEmbedding
 from models import Conversation, ConversationDocument, Message, MessageSource, get_db
+from models.base import async_session_factory
 from api.settings import get_or_create_settings
 from search.google_search import web_search
 from search.web_fetch import web_fetch
@@ -670,7 +672,7 @@ async def _finalize_chat(
     conv_id: uuid.UUID,
     client: AsyncOpenAI,
 ):
-    """Save messages, update conversation summary, embed exchange, and commit."""
+    """Save messages and commit immediately. Embedding + summary run in background."""
     user_msg = Message(
         user_id=user_id, role="user", content=user_message,
         source=MessageSource.TEXT, conversation_id=conv_id,
@@ -681,16 +683,47 @@ async def _finalize_chat(
     )
     db.add(user_msg)
     db.add(assistant_msg)
-
     conversation.updated_at = datetime.now(timezone.utc)
-    conversation.summary = await _generate_summary(
-        client, user_message, assistant_content, conversation.summary,
-    )
-    exchange_text = f"User: {user_message}\nAssistant: {assistant_content}"
-    embedding = await embed_text(exchange_text)
-    await store_embedding(db, user_id, exchange_text, embedding)
-
     await db.commit()
+
+    # Fire embedding + summary as a background task (own DB session)
+    asyncio.create_task(_background_embed_and_summarize(
+        user_id, conv_id, user_message, assistant_content,
+        conversation.summary, client,
+    ))
+
+
+async def _background_embed_and_summarize(
+    user_id: uuid.UUID,
+    conv_id: uuid.UUID,
+    user_message: str,
+    assistant_content: str,
+    existing_summary: str | None,
+    client: AsyncOpenAI,
+):
+    """Background: embed the exchange and update conversation summary in parallel."""
+    try:
+        exchange_text = f"User: {user_message}\nAssistant: {assistant_content}"
+
+        # Run embedding and summary generation concurrently
+        embedding, summary = await asyncio.gather(
+            embed_text(exchange_text),
+            _generate_summary(client, user_message, assistant_content, existing_summary),
+        )
+
+        async with async_session_factory() as db:
+            db.add(MemoryEmbedding(
+                user_id=user_id, content=exchange_text, embedding=embedding,
+            ))
+            result = await db.execute(
+                select(Conversation).where(Conversation.id == conv_id)
+            )
+            conversation = result.scalar_one_or_none()
+            if conversation:
+                conversation.summary = summary
+            await db.commit()
+    except Exception as e:
+        logger.error("Background embed/summarize failed for conv %s: %s", conv_id, e)
 
 
 # ---------------------------------------------------------------------------
