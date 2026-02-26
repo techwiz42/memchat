@@ -29,7 +29,6 @@ from voice.session_manager import create_session, end_session, end_session_by_us
 
 logger = logging.getLogger(__name__)
 
-HISTORY_TOKEN_BUDGET = 5000
 _tokenizer = tiktoken.get_encoding("cl100k_base")
 
 # Pattern matches "User: ..." or "Agent: ..." at the start of a line
@@ -93,6 +92,9 @@ async def start_voice_session(
     Creates a voice session token, builds the Omnia inline call config,
     and returns the joinUrl for the browser to connect via WebRTC.
     """
+    # Load per-user settings
+    user_settings = await get_or_create_settings(db, user_id)
+
     # Fetch recent conversation history, trimmed to token budget
     recent = await db.execute(
         select(Message)
@@ -105,15 +107,12 @@ async def start_voice_session(
     selected: list[Message] = []
     for msg in recent_all:
         msg_tokens = len(_tokenizer.encode(msg.content)) + 4
-        if token_count + msg_tokens > HISTORY_TOKEN_BUDGET:
+        if token_count + msg_tokens > user_settings.history_token_budget:
             break
         token_count += msg_tokens
         selected.append(msg)
     selected.reverse()
     recent_messages = selected
-
-    # Load per-user voice settings
-    user_settings = await get_or_create_settings(db, user_id)
 
     # Create session token for tool callback auth
     session_token = await create_session(user_id)

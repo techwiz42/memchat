@@ -68,10 +68,20 @@ async def exchange_code_for_user_info(code: str) -> dict:
     if not id_token:
         raise ValueError("No id_token in Google token response")
 
-    # Decode id_token without verification — we trust it because we just received
-    # it directly from Google over HTTPS in a server-to-server exchange using our
-    # client_secret. The client_secret proves this token was issued for us.
+    # Decode id_token without signature verification — we trust it because we
+    # just received it directly from Google over HTTPS in a server-to-server
+    # exchange using our client_secret. We still validate aud and iss claims
+    # to prevent confused deputy and token injection attacks.
     claims = jwt.decode(id_token, options={"verify_signature": False})
+
+    # Validate issuer
+    valid_issuers = ("https://accounts.google.com", "accounts.google.com")
+    if claims.get("iss") not in valid_issuers:
+        raise ValueError(f"Invalid id_token issuer: {claims.get('iss')}")
+
+    # Validate audience matches our client_id
+    if claims.get("aud") != settings.google_client_id:
+        raise ValueError(f"Invalid id_token audience: {claims.get('aud')}")
 
     required_fields = ["sub", "email"]
     for field in required_fields:

@@ -234,10 +234,12 @@ async def google_callback(
     access_token = create_access_token(user.id)
     refresh_token = create_refresh_token(user.id)
 
-    # Redirect to frontend callback page with tokens
+    # Redirect to frontend callback page with tokens in URL fragment.
+    # Fragments (#) are never sent to the server in HTTP requests, so tokens
+    # don't leak via server logs, Referer headers, or proxy logs.
     from urllib.parse import urlencode
     params = urlencode({"access_token": access_token, "refresh_token": refresh_token})
-    redirect_url = f"/auth/google/callback?{params}"
+    redirect_url = f"/auth/google/callback#{params}"
 
     response = RedirectResponse(url=redirect_url, status_code=status.HTTP_302_FOUND)
     # Clear the state cookie

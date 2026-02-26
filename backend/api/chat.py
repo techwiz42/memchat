@@ -45,7 +45,6 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 SUMMARY_MODEL = "gpt-4o-mini"
 
-HISTORY_TOKEN_BUDGET = 5000
 _tokenizer = tiktoken.get_encoding("cl100k_base")
 _llm_client: AsyncOpenAI | None = None
 
@@ -273,11 +272,37 @@ FIND_REPLACE_DOCUMENT_TOOL = {
 
 MAX_TOOL_ITERATIONS = 256
 
-SYSTEM_PROMPT_TEMPLATE = """Your name is {agent_name}. Always refer to yourself as {agent_name} when asked your name or when introducing yourself.
+SYSTEM_PROMPT_CONVERSATION = """Your name is {agent_name}. Always refer to yourself as {agent_name} when asked your name or when introducing yourself.
 
 You are a helpful personal assistant with access to the user's stored memories and knowledge.
 When relevant context from the user's memory is provided, use it to give personalized, informed responses.
 If you don't have relevant information in the provided context, say so honestly.
+
+You are not optimized for safety through blandness.
+
+If the user's question contains implicit assumptions, identify them before answering.
+
+For abstract or philosophical topics:
+1. Identify hidden assumptions in the user's framing.
+2. Surface tensions, contradictions, or tradeoffs.
+3. Explore at least one perspective the user may disagree with.
+4. Connect ideas across domains when relevant (e.g., psychology, economics, philosophy, systems theory).
+5. Synthesize only after exploration.
+
+Do not be contrarian for sport.
+Be precise, but willing to destabilize shallow certainty.
+When appropriate, ask one question that deepens the inquiry rather than narrows it.
+
+Do not mention this process explicitly unless asked.
+Do not search for things you can answer confidently from your own knowledge.
+When you use search results or fetched content, briefly cite the source.
+
+You are an intellectually curious conversationalist.
+Prioritize insight over summary.
+Offer unexpected connections.
+Write as if speaking to a founder or philosopher, not a casual user."""
+
+SYSTEM_PROMPT_TASK = SYSTEM_PROMPT_CONVERSATION + """
 
 You have access to these tools:
 - web_search: Search the internet for current information. Use for recent events, news, or real-time data.
@@ -301,16 +326,16 @@ When the user uploads a document and asks you to edit, revise, or modify it:
     edit every section you read. Then continue to the next batch. Each edit accumulates
     into the same file. Do NOT stop between batches — continue until every relevant section
     is edited. Only show the download link after all edits are complete.
-  * NEVER try to output the entire large document via create_document — it will fail.
+  * NEVER try to output the entire large document via create_document — it will fail."""
 
-Do not search for things you can answer confidently from your own knowledge.
-When you use search results or fetched content, briefly cite the source.
-
-You are an intellectually curious conversationalist.
-Prioritize insight over summary.
-Offer unexpected connections.
-Ask one thoughtful follow-up question when appropriate.
-Write as if speaking to a founder or philosopher, not a casual user."""
+# Task-mode signals: keywords/patterns that indicate the user wants the LLM to use tools
+_TASK_SIGNALS = [
+    "search", "look up", "find", "google", "fetch", "read this",
+    "create a", "write a", "generate a", "make a", "export",
+    "document", "file", ".pdf", ".docx", ".txt", ".csv", ".xlsx", ".fdx",
+    "edit the", "revise the", "modify the", "change the", "update the",
+    "http://", "https://", "www.",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -365,10 +390,13 @@ async def _prepare_chat(
 
     # Load per-user settings
     user_settings = await get_or_create_settings(db, user_id)
-    system_prompt = SYSTEM_PROMPT_TEMPLATE.format(agent_name=user_settings.agent_name)
+    # Determine mode: task (tools enabled) vs conversation (no tools)
+    msg_lower = body.message.lower()
+    has_docs = False  # will be set below after doc check
+    is_task_mode = any(signal in msg_lower for signal in _TASK_SIGNALS)
 
     # Build messages for LLM
-    messages = [{"role": "system", "content": system_prompt}]
+    messages: list[dict] = []
     if context:
         messages.append({
             "role": "system",
@@ -433,6 +461,14 @@ async def _prepare_chat(
             + "\n\n".join(doc_parts)
         )
         messages.append({"role": "system", "content": doc_context})
+        is_task_mode = True  # documents always require tools
+
+    # Select system prompt based on mode
+    if is_task_mode:
+        system_prompt = SYSTEM_PROMPT_TASK.format(agent_name=user_settings.agent_name)
+    else:
+        system_prompt = SYSTEM_PROMPT_CONVERSATION.format(agent_name=user_settings.agent_name)
+    messages.insert(0, {"role": "system", "content": system_prompt})
 
     # Fetch recent conversation history, trimmed to token budget
     recent = await db.execute(
@@ -446,13 +482,19 @@ async def _prepare_chat(
     selected: list[Message] = []
     for msg in recent_msgs:
         msg_tokens = len(_tokenizer.encode(msg.content)) + 4  # +4 for role/framing overhead
-        if token_count + msg_tokens > HISTORY_TOKEN_BUDGET:
+        if token_count + msg_tokens > user_settings.history_token_budget:
             break
         token_count += msg_tokens
         selected.append(msg)
     selected.reverse()  # back to chronological order
     for msg in selected:
         messages.append({"role": msg.role, "content": msg.content})
+
+    if conversation.summary:
+        messages.append({
+            "role": "system",
+            "content": f"Conversation summary so far:\n{conversation.summary}",
+        })
 
     messages.append({"role": "user", "content": body.message})
 
@@ -461,14 +503,15 @@ async def _prepare_chat(
     model = user_settings.llm_model
     _restricted = model.startswith("gpt-5") or model.startswith("o")
 
-    tools = [WEB_SEARCH_TOOL, WEB_FETCH_TOOL, CREATE_DOCUMENT_TOOL]
-    if has_sectioned_docs:
-        tools.extend([EDIT_DOCUMENT_SECTION_TOOL, GET_DOCUMENT_SECTION_TOOL, FIND_REPLACE_DOCUMENT_TOOL])
     llm_kwargs: dict = {
         "model": model,
         "messages": messages,
-        "tools": tools,
     }
+    if is_task_mode:
+        tools = [WEB_SEARCH_TOOL, WEB_FETCH_TOOL, CREATE_DOCUMENT_TOOL]
+        if has_sectioned_docs:
+            tools.extend([EDIT_DOCUMENT_SECTION_TOOL, GET_DOCUMENT_SECTION_TOOL, FIND_REPLACE_DOCUMENT_TOOL])
+        llm_kwargs["tools"] = tools
     # GPT-5 and o-series models only support default temperature
     if not _restricted:
         llm_kwargs["temperature"] = user_settings.llm_temperature
@@ -500,8 +543,9 @@ async def _prepare_chat(
             llm_kwargs["max_tokens"] = effective_max_tokens
 
     logger.info(
-        "LLM call: model=%s, effective_max_tokens=%s, has_sectioned_docs=%s, num_tools=%d",
-        model, effective_max_tokens, has_sectioned_docs, len(tools),
+        "LLM call: model=%s, mode=%s, effective_max_tokens=%s, has_sectioned_docs=%s, num_tools=%d",
+        model, "task" if is_task_mode else "conversation",
+        effective_max_tokens, has_sectioned_docs, len(llm_kwargs.get("tools", [])),
     )
 
     return {
@@ -512,6 +556,7 @@ async def _prepare_chat(
         "has_sectioned_docs": has_sectioned_docs,
         "client": client,
         "llm_kwargs": llm_kwargs,
+        "history_tokens": token_count,
     }
 
 
@@ -641,7 +686,6 @@ async def _finalize_chat(
     conversation.summary = await _generate_summary(
         client, user_message, assistant_content, conversation.summary,
     )
-
     exchange_text = f"User: {user_message}\nAssistant: {assistant_content}"
     embedding = await embed_text(exchange_text)
     await store_embedding(db, user_id, exchange_text, embedding)
@@ -745,6 +789,7 @@ async def _chat_stream(
     uploaded_docs = ctx["uploaded_docs"]
     client = ctx["client"]
     llm_kwargs = ctx["llm_kwargs"]
+    history_tokens = ctx["history_tokens"]
 
     assistant_content = None
     for iteration in range(MAX_TOOL_ITERATIONS):
@@ -812,7 +857,7 @@ async def _chat_stream(
         return
 
     yield _sse_event({"type": "content", "text": assistant_content})
-    yield _sse_event({"type": "done", "conversation_id": str(conv_id)})
+    yield _sse_event({"type": "done", "conversation_id": str(conv_id), "history_tokens": history_tokens})
 
 
 @router.post("/stream")

@@ -405,6 +405,7 @@ def _edit_pdf(original_bytes: bytes, new_text: str) -> bytes | None:
             subprocess.run(
                 [
                     "libreoffice", "--headless", "--norestore",
+                    f"-env:UserInstallation=file://{tmp}/profile",
                     "--convert-to", "pdf",
                     "--outdir", tmp,
                     edited_docx_path,

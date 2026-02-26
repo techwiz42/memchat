@@ -24,6 +24,7 @@ class UserSettings(Base):
     llm_model: Mapped[str] = mapped_column(String(100), default="gpt-4o")
     llm_temperature: Mapped[float] = mapped_column(Float, default=0.7)
     llm_max_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=None)
+    history_token_budget: Mapped[int] = mapped_column(Integer, default=5000)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

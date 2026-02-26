@@ -1,14 +1,16 @@
 "use client";
 
-import { Suspense, useEffect } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { setTokens } from "@/lib/auth";
 
-function CallbackHandler() {
+export default function GoogleCallbackPage() {
   const router = useRouter();
-  const params = useSearchParams();
 
   useEffect(() => {
+    // Tokens are in the URL fragment (#) so they never hit the server.
+    const hash = window.location.hash.substring(1); // strip leading #
+    const params = new URLSearchParams(hash);
     const accessToken = params.get("access_token");
     const refreshToken = params.get("refresh_token");
 
@@ -20,7 +22,7 @@ function CallbackHandler() {
     } else {
       router.replace("/login?error=missing_tokens");
     }
-  }, [params, router]);
+  }, [router]);
 
   return (
     <div className="flex items-center justify-center min-h-screen bg-gray-50">
@@ -29,13 +31,5 @@ function CallbackHandler() {
         <p className="text-sm text-gray-500">Signing you in...</p>
       </div>
     </div>
-  );
-}
-
-export default function GoogleCallbackPage() {
-  return (
-    <Suspense>
-      <CallbackHandler />
-    </Suspense>
   );
 }

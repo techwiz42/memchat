@@ -1,7 +1,9 @@
 """Fetch and extract readable text from any URL."""
 
+import ipaddress
 import logging
 import re
+import socket
 
 import httpx
 from bs4 import BeautifulSoup, Tag
@@ -11,6 +13,28 @@ logger = logging.getLogger(__name__)
 MAX_DOWNLOAD_BYTES = 2_000_000  # 2MB max download
 MAX_PARSE_CHARS = 500_000  # chars to feed parser
 MAX_TEXT_LENGTH = 8_000  # chars to return to LLM
+
+
+def _is_private_url(url: str) -> bool:
+    """Check if a URL resolves to a private/internal IP address."""
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+        if not hostname:
+            return True
+        # Block common internal hostnames
+        if hostname in ("localhost", "metadata.google.internal"):
+            return True
+        # Resolve and check IP
+        for info in socket.getaddrinfo(hostname, None):
+            addr = info[4][0]
+            ip = ipaddress.ip_address(addr)
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+                return True
+    except (socket.gaierror, ValueError):
+        return True  # fail closed on DNS resolution errors
+    return False
 
 
 async def web_fetch(url: str) -> str:
@@ -26,6 +50,10 @@ async def web_fetch(url: str) -> str:
 
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
+
+    if _is_private_url(url):
+        logger.warning(f"Web fetch blocked private/internal URL: {url!r}")
+        return f"Cannot fetch internal or private URLs."
 
     try:
         async with httpx.AsyncClient(

@@ -47,7 +47,7 @@ export async function apiFetch<T = any>(
 export interface StreamCallbacks {
   onProgress?: (message: string) => void;
   onContent?: (text: string) => void;
-  onDone?: (conversationId: string) => void;
+  onDone?: (conversationId: string, historyTokens?: number) => void;
   onError?: (error: string) => void;
 }
 
@@ -122,7 +122,7 @@ export function apiStream(
                 callbacks.onContent?.(event.text);
                 break;
               case "done":
-                callbacks.onDone?.(event.conversation_id);
+                callbacks.onDone?.(event.conversation_id, event.history_tokens);
                 break;
               case "error":
                 callbacks.onError?.(event.message);

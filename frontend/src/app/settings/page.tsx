@@ -12,6 +12,7 @@ interface Settings {
   llm_model: string;
   llm_temperature: number;
   llm_max_tokens: number | null;
+  history_token_budget: number;
 }
 
 interface Voice {
@@ -57,11 +58,12 @@ const LANGUAGES = [
 ];
 
 const LLM_MODELS = [
-  { value: "gpt-5", label: "GPT-5" },
+  { value: "gpt-5.2", label: "GPT-5.2" },
+  { value: "gpt-5.2-chat-latest", label: "GPT-5.2 Instant" },
+  { value: "gpt-5.1", label: "GPT-5.1" },
+  { value: "gpt-5.1-chat-latest", label: "GPT-5.1 Instant" },
   { value: "gpt-5-mini", label: "GPT-5 Mini" },
   { value: "gpt-4o", label: "GPT-4o" },
-  { value: "gpt-4o-mini", label: "GPT-4o Mini" },
-  { value: "gpt-4-turbo", label: "GPT-4 Turbo" },
   { value: "o3-mini", label: "o3-mini" },
 ];
 
@@ -79,6 +81,7 @@ export default function SettingsPage() {
     llm_model: "gpt-4o",
     llm_temperature: 0.7,
     llm_max_tokens: null,
+    history_token_budget: 5000,
   });
 
   const [voices, setVoices] = useState<Voice[]>([]);
@@ -134,6 +137,7 @@ export default function SettingsPage() {
         omnia_language_code: settings.omnia_language_code,
         llm_model: settings.llm_model,
         llm_temperature: settings.llm_temperature,
+        history_token_budget: settings.history_token_budget,
       };
       if (settings.llm_max_tokens !== null) {
         patch.llm_max_tokens = settings.llm_max_tokens;
@@ -327,6 +331,27 @@ export default function SettingsPage() {
                   placeholder="Model default"
                   className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  History Token Budget
+                </label>
+                <input
+                  type="number"
+                  value={settings.history_token_budget}
+                  onChange={(e) =>
+                    setSettings((s) => ({
+                      ...s,
+                      history_token_budget: e.target.value ? parseInt(e.target.value, 10) : 0,
+                    }))
+                  }
+                  placeholder="5000"
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <p className="text-xs text-gray-400 mt-1">
+                  Maximum tokens of conversation history included in each LLM request.
+                </p>
               </div>
             </div>
           </section>

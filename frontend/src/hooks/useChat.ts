@@ -23,6 +23,8 @@ export function useChat() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
+  const [historyTokens, setHistoryTokens] = useState<number | null>(null);
+  const [progressLines, setProgressLines] = useState<string[]>([]);
   // Use ref so sendMessage always reads the latest conversationId without re-creating the callback
   const conversationIdRef = useRef<string | null>(null);
   conversationIdRef.current = conversationId;
@@ -59,34 +61,32 @@ export function useChat() {
     };
     setMessages((prev) => [...prev, userMsg, placeholderMsg]);
     setLoading(true);
+    setProgressLines([]);
 
     const currentConvId = conversationIdRef.current;
-    const progressLines: string[] = [];
 
     apiStream(
       "/chat/stream",
       { message: text, conversation_id: currentConvId },
       {
         onProgress(message) {
-          progressLines.push(message);
-          const progressText = progressLines.join("  \n");
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === placeholderId ? { ...m, content: progressText } : m,
-            ),
-          );
+          setProgressLines((prev) => [...prev, message]);
         },
         onContent(finalText) {
+          setProgressLines([]);
           setMessages((prev) =>
             prev.map((m) =>
               m.id === placeholderId ? { ...m, content: finalText } : m,
             ),
           );
         },
-        onDone(convId) {
+        onDone(convId, tokens) {
           if (!currentConvId && convId) {
             setConversationId(convId);
             conversationIdRef.current = convId;
+          }
+          if (tokens !== undefined) {
+            setHistoryTokens(tokens);
           }
           setLoading(false);
         },
@@ -231,6 +231,8 @@ export function useChat() {
     messages,
     loading,
     conversationId,
+    historyTokens,
+    progressLines,
     sendMessage,
     sendMessageWithFile,
     appendVoiceTranscript,

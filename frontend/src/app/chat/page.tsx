@@ -30,6 +30,8 @@ export default function ChatPage() {
     appendVisionAnalysis,
     newConversation,
     selectConversation,
+    historyTokens,
+    progressLines,
   } = useChat();
   const { conversations, loadConversations, deleteConversation } = useConversations();
   const { status, transcripts, isActive, startSession, endSession, sendText } = useVoiceSession();
@@ -215,6 +217,8 @@ export default function ChatPage() {
           <ChatWindow
             messages={messages}
             loading={chatLoading}
+            historyTokens={historyTokens}
+            progressLines={progressLines}
             onSend={sendMessage}
             onSendWithFile={sendMessageWithFile}
             onFileProcessed={handleFileProcessed}

@@ -10,6 +10,8 @@ const ACCEPTED_EXTENSIONS =
 interface Props {
   messages: ChatMessage[];
   loading: boolean;
+  historyTokens?: number | null;
+  progressLines?: string[];
   onSend: (text: string) => void;
   onSendWithFile: (text: string, file: File) => Promise<UploadResponse | null>;
   onFileProcessed?: (file: File, result: UploadResponse) => void;
@@ -18,6 +20,8 @@ interface Props {
 export default function ChatWindow({
   messages,
   loading,
+  historyTokens,
+  progressLines = [],
   onSend,
   onSendWithFile,
   onFileProcessed,
@@ -129,9 +133,16 @@ export default function ChatWindow({
         {messages.map((msg) =>
           msg.content ? <MessageBubble key={msg.id} message={msg} /> : null,
         )}
-        {loading && (!messages.length || messages[messages.length - 1].role !== "assistant" || !messages[messages.length - 1].content) && (
+        {loading && (
           <div className="flex justify-start mb-3">
             <div className="bg-gray-100 rounded-2xl px-4 py-2.5">
+              {progressLines.length > 0 && (
+                <div className="text-xs text-gray-500 mb-1.5 space-y-0.5">
+                  {progressLines.map((line, i) => (
+                    <div key={i}>{line}</div>
+                  ))}
+                </div>
+              )}
               <div className="flex gap-1">
                 <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" />
                 <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:0.1s]" />
@@ -145,6 +156,11 @@ export default function ChatWindow({
 
       {/* Input area */}
       <form onSubmit={handleSubmit} className="border-t border-gray-200 p-4">
+        {historyTokens != null && (
+          <div className="text-xs text-gray-400 mb-1.5 text-right">
+            {historyTokens.toLocaleString()} history tokens
+          </div>
+        )}
         <div className="flex gap-2">
           {/* File attach button */}
           <button
@@ -152,7 +168,7 @@ export default function ChatWindow({
             onClick={() => fileInputRef.current?.click()}
             disabled={loading}
             className="text-gray-400 hover:text-gray-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors p-2"
-            title="Attach a file"
+            title=""
           >
             <svg
               className="w-5 h-5"
@@ -176,12 +192,21 @@ export default function ChatWindow({
             className="hidden"
           />
 
-          <input
-            type="text"
+          <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                if (!loading && input.trim()) {
+                  onSend(input.trim());
+                  setInput("");
+                }
+              }
+            }}
             placeholder="Type a message..."
-            className="flex-1 rounded-xl border border-gray-300 px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            rows={3}
+            className="flex-1 rounded-xl border border-gray-300 px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
             disabled={loading}
           />
           <button

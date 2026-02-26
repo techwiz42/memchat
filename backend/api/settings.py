@@ -32,6 +32,7 @@ class SettingsOut(BaseModel):
     llm_model: str
     llm_temperature: float
     llm_max_tokens: Optional[int]
+    history_token_budget: int
 
 
 class SettingsPatch(BaseModel):
@@ -41,6 +42,7 @@ class SettingsPatch(BaseModel):
     llm_model: Optional[str] = Field(None, max_length=100)
     llm_temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
     llm_max_tokens: Optional[int] = Field(None, ge=1, le=128000)
+    history_token_budget: Optional[int] = None
 
 
 async def get_or_create_settings(db: AsyncSession, user_id: uuid.UUID) -> UserSettings:
@@ -97,6 +99,7 @@ def _to_out(user_settings: UserSettings) -> SettingsOut:
         llm_model=user_settings.llm_model,
         llm_temperature=user_settings.llm_temperature,
         llm_max_tokens=user_settings.llm_max_tokens,
+        history_token_budget=user_settings.history_token_budget,
     )
 
 
