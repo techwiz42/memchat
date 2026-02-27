@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from openai import AsyncOpenAI
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, delete, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth.jwt import get_current_user_id
@@ -470,6 +470,10 @@ async def _prepare_chat(
         system_prompt = SYSTEM_PROMPT_TASK.format(agent_name=user_settings.agent_name)
     else:
         system_prompt = SYSTEM_PROMPT_CONVERSATION.format(agent_name=user_settings.agent_name)
+
+    if user_settings.custom_system_prompt:
+        system_prompt += f"\n\nAdditional instructions from the user:\n{user_settings.custom_system_prompt}"
+
     messages.insert(0, {"role": "system", "content": system_prompt})
 
     # Fetch recent conversation history, trimmed to token budget
@@ -809,7 +813,13 @@ async def chat(
 async def _chat_stream(
     user_id: uuid.UUID, body: ChatRequest, db: AsyncSession,
 ):
-    """Async generator yielding SSE events during the chat tool loop."""
+    """Async generator yielding SSE events during the chat tool loop.
+
+    Uses streaming LLM calls: content tokens are emitted immediately as
+    {"type": "token"} events; tool-call argument fragments are buffered
+    silently.  A final {"type": "content"} event carries the authoritative
+    full text after streaming completes.
+    """
     try:
         ctx = await _prepare_chat(user_id, body, db)
     except HTTPException as e:
@@ -826,44 +836,108 @@ async def _chat_stream(
 
     assistant_content = None
     for iteration in range(MAX_TOOL_ITERATIONS):
+        # Enable streaming
+        llm_kwargs["stream"] = True
         try:
-            completion = await client.chat.completions.create(**llm_kwargs)
+            stream = await client.chat.completions.create(**llm_kwargs)
         except Exception as e:
             logger.error("LLM API call failed on iteration %d: %s", iteration, e)
             break
-        choice = completion.choices[0]
+
+        accumulated_content = ""
+        accumulated_tool_calls: dict[int, dict] = {}  # {index: {id, name, args}}
+        finish_reason = None
+
+        async for chunk in stream:
+            delta = chunk.choices[0].delta
+            finish_reason = chunk.choices[0].finish_reason
+
+            # Buffer tool-call argument fragments silently
+            if delta.tool_calls:
+                for tc in delta.tool_calls:
+                    idx = tc.index
+                    if idx not in accumulated_tool_calls:
+                        accumulated_tool_calls[idx] = {
+                            "id": tc.id or "",
+                            "name": (tc.function.name if tc.function else "") or "",
+                            "args": "",
+                        }
+                    else:
+                        # Fill in id/name if they arrive in later chunks
+                        if tc.id:
+                            accumulated_tool_calls[idx]["id"] = tc.id
+                        if tc.function and tc.function.name:
+                            accumulated_tool_calls[idx]["name"] = tc.function.name
+                    if tc.function and tc.function.arguments:
+                        accumulated_tool_calls[idx]["args"] += tc.function.arguments
+
+            # Stream content tokens to the client immediately
+            if delta.content:
+                accumulated_content += delta.content
+                yield _sse_event({"type": "token", "text": delta.content})
+
         logger.info(
-            "LLM iteration %d: finish_reason=%s, has_tool_calls=%s, has_content=%s, content_len=%s",
-            iteration, choice.finish_reason,
-            bool(choice.message.tool_calls),
-            choice.message.content is not None,
-            len(choice.message.content) if choice.message.content else 0,
+            "LLM iteration %d (streamed): finish_reason=%s, content_len=%d, tool_calls=%d",
+            iteration, finish_reason, len(accumulated_content), len(accumulated_tool_calls),
         )
 
-        if choice.finish_reason == "length":
+        if finish_reason == "length":
             logger.warning("LLM output truncated (finish_reason=length) on iteration %d", iteration)
-            assistant_content = choice.message.content
+            assistant_content = accumulated_content
             break
 
-        if choice.finish_reason == "tool_calls" and choice.message.tool_calls:
-            messages.append(choice.message)
-            for tool_call in choice.message.tool_calls:
+        if finish_reason == "tool_calls" and accumulated_tool_calls:
+            # Build a synthetic message object for the conversation history
+            tool_calls_for_history = []
+            for idx in sorted(accumulated_tool_calls.keys()):
+                tc_data = accumulated_tool_calls[idx]
+                tool_calls_for_history.append({
+                    "id": tc_data["id"],
+                    "type": "function",
+                    "function": {
+                        "name": tc_data["name"],
+                        "arguments": tc_data["args"],
+                    },
+                })
+            assistant_msg_for_history = {
+                "role": "assistant",
+                "content": accumulated_content or None,
+                "tool_calls": tool_calls_for_history,
+            }
+            messages.append(assistant_msg_for_history)
+
+            # Execute each tool call
+            for tc_entry in tool_calls_for_history:
+                # Create a lightweight object that _execute_tool_call can use
+                class _ToolCall:
+                    def __init__(self, entry):
+                        self.id = entry["id"]
+                        class _Fn:
+                            def __init__(self, fn):
+                                self.name = fn["name"]
+                                self.arguments = fn["arguments"]
+                        self.function = _Fn(entry["function"])
+                tc_obj = _ToolCall(tc_entry)
                 result, progress_msgs = await _execute_tool_call(
-                    tool_call, uploaded_docs, user_id, db,
+                    tc_obj, uploaded_docs, user_id, db,
                 )
                 for msg in progress_msgs:
                     yield _sse_event({"type": "progress", "message": msg})
                 messages.append({
                     "role": "tool",
-                    "tool_call_id": tool_call.id,
+                    "tool_call_id": tc_entry["id"],
                     "content": result,
                 })
+            # Continue the loop for the next LLM call
+            # Reset stream flag (it gets set again at top of loop)
+            continue
         else:
-            assistant_content = choice.message.content
+            # Normal stop — content is the final response
+            assistant_content = accumulated_content if accumulated_content else None
             if assistant_content is None:
                 logger.warning(
                     "LLM returned finish_reason=%s with no content on iteration %d",
-                    choice.finish_reason, iteration,
+                    finish_reason, iteration,
                 )
             break
 
@@ -940,6 +1014,116 @@ async def get_history(
         )
         for m in messages
     ]
+
+
+class EditMessageRequest(BaseModel):
+    content: str
+
+
+class RegenerateRequest(BaseModel):
+    message_id: str
+
+
+@router.put("/messages/{message_id}")
+async def edit_message(
+    message_id: uuid.UUID,
+    body: EditMessageRequest,
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Edit a user message's content."""
+    result = await db.execute(
+        select(Message).where(Message.id == message_id, Message.user_id == user_id)
+    )
+    msg = result.scalar_one_or_none()
+    if not msg:
+        raise HTTPException(status_code=404, detail="Message not found")
+    if msg.role != "user":
+        raise HTTPException(status_code=400, detail="Can only edit user messages")
+    msg.content = body.content
+    await db.commit()
+    return {"ok": True}
+
+
+@router.delete("/messages/{message_id}")
+async def delete_message_and_after(
+    message_id: uuid.UUID,
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a message and all subsequent messages in the same conversation."""
+    result = await db.execute(
+        select(Message).where(Message.id == message_id, Message.user_id == user_id)
+    )
+    msg = result.scalar_one_or_none()
+    if not msg:
+        raise HTTPException(status_code=404, detail="Message not found")
+
+    if msg.conversation_id:
+        await db.execute(
+            delete(Message).where(and_(
+                Message.conversation_id == msg.conversation_id,
+                Message.created_at >= msg.created_at,
+                Message.user_id == user_id,
+            ))
+        )
+    else:
+        await db.execute(delete(Message).where(Message.id == message_id))
+    await db.commit()
+    return {"ok": True}
+
+
+@router.post("/regenerate")
+async def regenerate_message(
+    body: RegenerateRequest,
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete all messages after a user message and re-stream the response."""
+    try:
+        msg_id = uuid.UUID(body.message_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid message_id")
+
+    result = await db.execute(
+        select(Message).where(Message.id == msg_id, Message.user_id == user_id)
+    )
+    msg = result.scalar_one_or_none()
+    if not msg:
+        raise HTTPException(status_code=404, detail="Message not found")
+    if msg.role != "user":
+        raise HTTPException(status_code=400, detail="Can only regenerate from user messages")
+
+    # Delete all messages after this one in the conversation
+    if msg.conversation_id:
+        await db.execute(
+            delete(Message).where(and_(
+                Message.conversation_id == msg.conversation_id,
+                Message.created_at > msg.created_at,
+                Message.user_id == user_id,
+            ))
+        )
+        await db.commit()
+
+    # Re-stream response for this message
+    chat_body = ChatRequest(
+        message=msg.content,
+        conversation_id=str(msg.conversation_id) if msg.conversation_id else None,
+    )
+
+    # Delete the user message too — _finalize_chat will re-save it
+    await db.execute(delete(Message).where(Message.id == msg_id))
+    await db.commit()
+
+    return StreamingResponse(
+        _chat_stream(user_id, chat_body, db),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 def _find_relevant_sections(

@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from models.base import Base, async_engine
-from api import auth, chat, conversations, documents, settings, voice, voice_tools, vision_ws
+from api import auth, chat, conversations, documents, settings, voice, voice_tools, vision_ws, memory, document_library
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -29,6 +29,8 @@ app.include_router(settings.router)
 app.include_router(voice.router)
 app.include_router(voice_tools.router)
 app.include_router(vision_ws.router)
+app.include_router(memory.router)
+app.include_router(document_library.router)
 
 
 @app.on_event("startup")
@@ -52,6 +54,12 @@ async def startup():
                 "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS agent_name VARCHAR(100) DEFAULT 'Assistant'"
             )
         )
+        # Migrate: add custom_system_prompt column if it doesn't exist
+        await conn.execute(
+            __import__("sqlalchemy").text(
+                "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS custom_system_prompt TEXT DEFAULT ''"
+            )
+        )
         # Migrate: add conversation_id column to messages if it doesn't exist
         await conn.execute(
             __import__("sqlalchemy").text(
@@ -61,6 +69,13 @@ async def startup():
         await conn.execute(
             __import__("sqlalchemy").text(
                 "CREATE INDEX IF NOT EXISTS ix_messages_conversation_id ON messages (conversation_id)"
+            )
+        )
+        # GIN index for full-text search on message content
+        await conn.execute(
+            __import__("sqlalchemy").text(
+                "CREATE INDEX IF NOT EXISTS ix_messages_content_tsvector "
+                "ON messages USING GIN (to_tsvector('english', content))"
             )
         )
         # HNSW index for fast approximate nearest-neighbor vector search

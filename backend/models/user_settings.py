@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import Float, Integer, String, DateTime, ForeignKey
+from sqlalchemy import Float, Integer, String, Text, DateTime, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -25,6 +25,7 @@ class UserSettings(Base):
     llm_temperature: Mapped[float] = mapped_column(Float, default=0.7)
     llm_max_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=None)
     history_token_budget: Mapped[int] = mapped_column(Integer, default=5000)
+    custom_system_prompt: Mapped[str] = mapped_column(Text, default="")
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

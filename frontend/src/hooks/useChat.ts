@@ -9,6 +9,7 @@ export interface ChatMessage {
   content: string;
   source: "text" | "voice" | "vision";
   created_at: string;
+  streaming?: boolean;
 }
 
 export interface UploadResponse {
@@ -58,6 +59,7 @@ export function useChat() {
       content: "",
       source: "text",
       created_at: new Date().toISOString(),
+      streaming: true,
     };
     setMessages((prev) => [...prev, userMsg, placeholderMsg]);
     setLoading(true);
@@ -69,6 +71,11 @@ export function useChat() {
       "/chat/stream",
       { message: text, conversation_id: currentConvId },
       {
+        onToken(text) {
+          setMessages((prev) => prev.map((m) =>
+            m.id === placeholderId ? { ...m, content: m.content + text } : m
+          ));
+        },
         onProgress(message) {
           setProgressLines((prev) => [...prev, message]);
         },
@@ -76,7 +83,7 @@ export function useChat() {
           setProgressLines([]);
           setMessages((prev) =>
             prev.map((m) =>
-              m.id === placeholderId ? { ...m, content: finalText } : m,
+              m.id === placeholderId ? { ...m, content: finalText, streaming: false } : m,
             ),
           );
         },
@@ -95,7 +102,7 @@ export function useChat() {
           setMessages((prev) =>
             prev.map((m) =>
               m.id === placeholderId
-                ? { ...m, content: "Sorry, something went wrong. Please try again." }
+                ? { ...m, content: "Sorry, something went wrong. Please try again.", streaming: false }
                 : m,
             ),
           );
@@ -216,6 +223,93 @@ export function useChat() {
     setMessages((prev) => [...prev, msg]);
   }, []);
 
+  const editMessage = useCallback(async (id: string, newContent: string) => {
+    // Update the message content on the backend
+    await apiFetch(`/chat/messages/${id}`, {
+      method: "PUT",
+      body: JSON.stringify({ content: newContent }),
+    });
+    // Update local state
+    setMessages((prev) => prev.map((m) =>
+      m.id === id ? { ...m, content: newContent } : m
+    ));
+    // Now regenerate from that message
+    regenerateAfter(id);
+  }, []);
+
+  const regenerateAfter = useCallback((messageId: string) => {
+    // Find the user message to regenerate from
+    const msgIndex = messages.findIndex((m) => m.id === messageId);
+    if (msgIndex === -1) return;
+    const userMsg = messages[msgIndex];
+
+    // For assistant messages, find the preceding user message
+    let targetMsg = userMsg;
+    if (userMsg.role === "assistant") {
+      for (let i = msgIndex - 1; i >= 0; i--) {
+        if (messages[i].role === "user") {
+          targetMsg = messages[i];
+          break;
+        }
+      }
+    }
+
+    // Remove messages after the target user message and add placeholder
+    const targetIndex = messages.findIndex((m) => m.id === targetMsg.id);
+    const placeholderId = crypto.randomUUID();
+    const placeholderMsg: ChatMessage = {
+      id: placeholderId,
+      role: "assistant",
+      content: "",
+      source: "text",
+      created_at: new Date().toISOString(),
+      streaming: true,
+    };
+    setMessages((prev) => [...prev.slice(0, targetIndex + 1), placeholderMsg]);
+    setLoading(true);
+    setProgressLines([]);
+
+    apiStream(
+      "/chat/regenerate",
+      { message_id: targetMsg.id },
+      {
+        onToken(text) {
+          setMessages((prev) => prev.map((m) =>
+            m.id === placeholderId ? { ...m, content: m.content + text } : m
+          ));
+        },
+        onProgress(message) {
+          setProgressLines((prev) => [...prev, message]);
+        },
+        onContent(finalText) {
+          setProgressLines([]);
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === placeholderId ? { ...m, content: finalText, streaming: false } : m
+            ),
+          );
+        },
+        onDone(_convId, tokens) {
+          if (tokens !== undefined) {
+            setHistoryTokens(tokens);
+          }
+          setLoading(false);
+        },
+        onError(error) {
+          console.error("Regenerate error:", error);
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === placeholderId
+                ? { ...m, content: "Sorry, regeneration failed. Please try again.", streaming: false }
+                : m
+            ),
+          );
+          setLoading(false);
+        },
+      },
+    );
+  }, [messages]);
+
   const newConversation = useCallback(() => {
     setConversationId(null);
     conversationIdRef.current = null;
@@ -240,5 +334,7 @@ export function useChat() {
     loadHistory,
     newConversation,
     selectConversation,
+    editMessage,
+    regenerateAfter,
   };
 }

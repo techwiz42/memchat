@@ -13,6 +13,7 @@ interface Settings {
   llm_temperature: number;
   llm_max_tokens: number | null;
   history_token_budget: number;
+  custom_system_prompt: string;
 }
 
 interface Voice {
@@ -82,6 +83,7 @@ export default function SettingsPage() {
     llm_temperature: 0.7,
     llm_max_tokens: null,
     history_token_budget: 5000,
+    custom_system_prompt: "",
   });
 
   const [voices, setVoices] = useState<Voice[]>([]);
@@ -138,6 +140,7 @@ export default function SettingsPage() {
         llm_model: settings.llm_model,
         llm_temperature: settings.llm_temperature,
         history_token_budget: settings.history_token_budget,
+        custom_system_prompt: settings.custom_system_prompt,
       };
       if (settings.llm_max_tokens !== null) {
         patch.llm_max_tokens = settings.llm_max_tokens;
@@ -197,6 +200,29 @@ export default function SettingsPage() {
               />
               <p className="text-xs text-gray-400 mt-1">
                 The agent will introduce itself and refer to itself by this name.
+              </p>
+            </div>
+          </section>
+
+          {/* Custom System Prompt */}
+          <section>
+            <h2 className="text-base font-semibold text-gray-900 mb-4">Custom Instructions</h2>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                System Prompt
+              </label>
+              <textarea
+                value={settings.custom_system_prompt}
+                onChange={(e) =>
+                  setSettings((s) => ({ ...s, custom_system_prompt: e.target.value }))
+                }
+                placeholder="Add custom instructions for the AI (e.g., 'Always respond in French' or 'You are a coding expert')"
+                maxLength={2000}
+                rows={4}
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-vertical"
+              />
+              <p className="text-xs text-gray-400 mt-1">
+                These instructions will be included in every conversation. {settings.custom_system_prompt.length}/2000 characters.
               </p>
             </div>
           </section>

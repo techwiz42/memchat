@@ -45,6 +45,7 @@ export async function apiFetch<T = any>(
 }
 
 export interface StreamCallbacks {
+  onToken?: (text: string) => void;
   onProgress?: (message: string) => void;
   onContent?: (text: string) => void;
   onDone?: (conversationId: string, historyTokens?: number) => void;
@@ -115,6 +116,9 @@ export function apiStream(
           try {
             const event = JSON.parse(jsonStr);
             switch (event.type) {
+              case "token":
+                callbacks.onToken?.(event.text);
+                break;
               case "progress":
                 callbacks.onProgress?.(event.message);
                 break;

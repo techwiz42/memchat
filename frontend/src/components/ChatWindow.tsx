@@ -15,6 +15,8 @@ interface Props {
   onSend: (text: string) => void;
   onSendWithFile: (text: string, file: File) => Promise<UploadResponse | null>;
   onFileProcessed?: (file: File, result: UploadResponse) => void;
+  onEditMessage?: (id: string, content: string) => void;
+  onRegenerateMessage?: (id: string) => void;
 }
 
 export default function ChatWindow({
@@ -25,6 +27,8 @@ export default function ChatWindow({
   onSend,
   onSendWithFile,
   onFileProcessed,
+  onEditMessage,
+  onRegenerateMessage,
 }: Props) {
   const [input, setInput] = useState("");
   const [dragging, setDragging] = useState(false);
@@ -131,7 +135,14 @@ export default function ChatWindow({
           </div>
         )}
         {messages.map((msg) =>
-          msg.content ? <MessageBubble key={msg.id} message={msg} /> : null,
+          msg.content ? (
+            <MessageBubble
+              key={msg.id}
+              message={msg}
+              onEdit={onEditMessage}
+              onRegenerate={onRegenerateMessage}
+            />
+          ) : null,
         )}
         {loading && (
           <div className="flex justify-start mb-3">

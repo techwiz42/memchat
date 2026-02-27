@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useCallback } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useEffect, useRef, useCallback } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { isLoggedIn } from "@/lib/auth";
+import { isLoggedIn, getAccessToken, refreshAccessToken } from "@/lib/auth";
 import { useAuth } from "@/hooks/useAuth";
 import { useChat, UploadResponse } from "@/hooks/useChat";
 import { useConversations } from "@/hooks/useConversations";
@@ -18,7 +18,20 @@ import CameraButton from "@/components/CameraButton";
 import VideoPreview from "@/components/VideoPreview";
 
 export default function ChatPage() {
+  return (
+    <Suspense fallback={
+      <div className="flex items-center justify-center h-screen">
+        <div className="animate-spin w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full" />
+      </div>
+    }>
+      <ChatPageInner />
+    </Suspense>
+  );
+}
+
+function ChatPageInner() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { user, loading: authLoading, logout } = useAuth();
   const {
     messages,
@@ -32,6 +45,8 @@ export default function ChatPage() {
     selectConversation,
     historyTokens,
     progressLines,
+    editMessage,
+    regenerateAfter,
   } = useChat();
   const { conversations, loadConversations, deleteConversation } = useConversations();
   const { status, transcripts, isActive, startSession, endSession, sendText } = useVoiceSession();
@@ -67,6 +82,14 @@ export default function ChatPage() {
       loadConversations();
     }
   }, [authLoading, loadConversations]);
+
+  // Handle ?c=conversationId query param (e.g. from document library)
+  useEffect(() => {
+    const cParam = searchParams.get("c");
+    if (cParam && !authLoading && isLoggedIn()) {
+      selectConversation(cParam);
+    }
+  }, [searchParams, authLoading, selectConversation]);
 
   // Refresh sidebar whenever conversationId changes (new conversation created)
   useEffect(() => {
@@ -134,6 +157,33 @@ export default function ChatPage() {
     }
   };
 
+  const handleExport = useCallback(async () => {
+    if (!conversationId) return;
+    const url = `/api/conversations/${conversationId}/export`;
+    let token = getAccessToken();
+    let res = await fetch(url, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (res.status === 401) {
+      const newToken = await refreshAccessToken();
+      if (newToken) {
+        res = await fetch(url, { headers: { Authorization: `Bearer ${newToken}` } });
+      }
+    }
+    if (!res.ok) return;
+    const blob = await res.blob();
+    const disposition = res.headers.get("Content-Disposition") || "";
+    const match = disposition.match(/filename="?([^"]+)"?/);
+    const filename = match ? match[1] : "conversation.md";
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
+  }, [conversationId]);
+
   const handleNewChat = useCallback(() => {
     newConversation();
   }, [newConversation]);
@@ -177,7 +227,37 @@ export default function ChatPage() {
             onStart={handleStartCamera}
             onStop={handleStopCamera}
           />
+          {conversationId && (
+            <button
+              onClick={handleExport}
+              className="text-gray-400 hover:text-gray-600 transition-colors"
+              title="Export conversation"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5">
+                <path d="M10.75 2.75a.75.75 0 0 0-1.5 0v8.614L6.295 8.235a.75.75 0 1 0-1.09 1.03l4.25 4.5a.75.75 0 0 0 1.09 0l4.25-4.5a.75.75 0 0 0-1.09-1.03l-2.955 3.129V2.75Z" />
+                <path d="M3.5 12.75a.75.75 0 0 0-1.5 0v2.5A2.75 2.75 0 0 0 4.75 18h10.5A2.75 2.75 0 0 0 18 15.25v-2.5a.75.75 0 0 0-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5Z" />
+              </svg>
+            </button>
+          )}
           <span className="text-sm text-gray-500">{user?.email}</span>
+          <Link
+            href="/memory"
+            className="text-gray-400 hover:text-gray-600 transition-colors"
+            title="Memories"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5">
+              <path d="M10 .5a9.5 9.5 0 1 0 5.598 17.177C14.53 15.749 12.412 14.5 10 14.5c-2.133 0-4.04.975-5.293 2.5A9.456 9.456 0 0 1 .5 10a9.5 9.5 0 0 1 9.5-9.5Zm0 5a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z" />
+            </svg>
+          </Link>
+          <Link
+            href="/documents"
+            className="text-gray-400 hover:text-gray-600 transition-colors"
+            title="Documents"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5">
+              <path d="M3 3.5A1.5 1.5 0 0 1 4.5 2h6.879a1.5 1.5 0 0 1 1.06.44l4.122 4.12A1.5 1.5 0 0 1 17 7.622V16.5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 3 16.5v-13Zm10.5 5.5a1 1 0 0 0-1-1H7.5a1 1 0 0 0 0 2h5a1 1 0 0 0 1-1Zm0 3a1 1 0 0 0-1-1H7.5a1 1 0 0 0 0 2h5a1 1 0 0 0 1-1Zm-7-3.75a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Z" />
+            </svg>
+          </Link>
           <Link
             href="/settings"
             className="text-gray-400 hover:text-gray-600 transition-colors"
@@ -222,6 +302,8 @@ export default function ChatPage() {
             onSend={sendMessage}
             onSendWithFile={sendMessageWithFile}
             onFileProcessed={handleFileProcessed}
+            onEditMessage={editMessage}
+            onRegenerateMessage={regenerateAfter}
           />
 
           {/* Voice transcript overlay */}
