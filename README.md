@@ -1,227 +1,214 @@
-# Per-User LLM + Local RAG Architecture
+# Memchat
 
-## Technical Specification, Threat Model, and Implementation Roadmap
+A web-based AI chat application with per-user RAG memory, real-time voice conversations, document processing, live camera vision, and web search — deployed at [memchat.cyberiad.ai](https://memchat.cyberiad.ai).
 
-------------------------------------------------------------------------
+## Features
 
-# 1. Overview
+- **RAG-augmented chat** — Every conversation is grounded in the user's personal memory. Messages are embedded and retrieved via pgvector cosine similarity, giving the LLM long-term context across sessions.
+- **Token streaming** — LLM responses stream token-by-token over SSE, rendering as plain text during generation and snapping to formatted markdown on completion.
+- **Voice conversations** — Real-time WebRTC voice sessions via Omnia (Ultravox). The voice agent has access to RAG memory, web search, and memory storage tools.
+- **Document processing** — Upload PDF, DOCX, XLSX, FDX (screenplays), TXT, Markdown, or images. Files are parsed, chunked, embedded into RAG, and available for in-context editing with format preservation.
+- **Live camera vision** — WebSocket-based camera streaming with YOLO object detection and GPT-4o vision analysis triggered on scene changes.
+- **Web search** — Google Custom Search integration lets the LLM fetch current information and read web pages.
+- **Memory dashboard** — Browse, search (semantic), add, and delete memories at `/memory`.
+- **Document library** — View all uploaded documents across conversations, preview content, and manage files at `/documents`.
+- **Conversation search** — Full-text search across all messages using PostgreSQL tsvector with highlighted snippets.
+- **Conversation export** — Download any conversation as a Markdown file.
+- **Message edit and regenerate** — Edit user messages and regenerate assistant responses from any point in the conversation.
+- **Custom system prompt** — Per-user instructions injected into every LLM call, configurable in settings.
+- **Per-user settings** — Configurable LLM model, temperature, max tokens, history token budget, voice, and language.
+- **Background summarization** — A worker runs hourly, summarizing and re-embedding old memories to compress the knowledge base over time.
 
-This project implements a web-based chat system combining:
+## Architecture
 
--   Cloud-hosted LLM API
--   Per-user Retrieval-Augmented Generation (RAG)
--   Embedding-only memory persistence
--   Periodic summarization + re-embedding
--   No STM/LTM distinction (initial version)
-
-This system is independent of any DSO-related infrastructure.
-
-------------------------------------------------------------------------
-
-# 2. System Architecture
-
-## High-Level Components
-
-1.  Web Client (React/TypeScript)
-2.  API Server (FastAPI)
-3.  Embedding Model (API or local)
-4.  Vector Store (per-user namespace)
-5.  Cloud LLM API
-6.  Background Summarization Worker
-
-------------------------------------------------------------------------
-
-# 3. Sequence Diagrams
-
-## 3.1 Chat Request Flow
-
-``` mermaid
-sequenceDiagram
-    participant User
-    participant Browser
-    participant API
-    participant VectorDB
-    participant LLM
-
-    User->>Browser: Send message
-    Browser->>API: POST /chat
-    API->>VectorDB: Retrieve top-k embeddings
-    VectorDB-->>API: Relevant memories
-    API->>LLM: Prompt + retrieved context
-    LLM-->>API: Response
-    API->>VectorDB: Store new embedding
-    API-->>Browser: Return response
+```
+Browser ──── nginx (reverse proxy) ──┬── Next.js frontend (port 3000)
+                                     └── FastAPI backend  (port 8000)
+                                              │
+                                    ┌─────────┼─────────┐
+                                    │         │         │
+                               PostgreSQL   Redis    OpenAI API
+                               (pgvector)  (sessions)  (LLM + embeddings)
 ```
 
-------------------------------------------------------------------------
+**Stack**: FastAPI, SQLAlchemy (async), PostgreSQL with pgvector, Redis, Next.js 14, Tailwind CSS, Docker Compose.
 
-## 3.2 Memory Summarization Flow
+**External services**: OpenAI (chat + embeddings), Omnia/Ultravox (voice), Google Custom Search.
 
-``` mermaid
-sequenceDiagram
-    participant Worker
-    participant VectorDB
-    participant LLM
+## Repository Structure
 
-    Worker->>VectorDB: Fetch old memory chunks
-    Worker->>LLM: Summarize chunks
-    LLM-->>Worker: Summary
-    Worker->>VectorDB: Delete old embeddings
-    Worker->>VectorDB: Store summary embedding
+```
+memchat/
+├── backend/
+│   ├── api/                 # FastAPI routers (11 modules, 40+ endpoints)
+│   │   ├── auth.py          # Registration, login, Google OAuth
+│   │   ├── chat.py          # Text chat with RAG, streaming, tool calls
+│   │   ├── conversations.py # CRUD, full-text search, markdown export
+│   │   ├── documents.py     # Upload, parse, chunk, embed
+│   │   ├── document_library.py  # Cross-conversation document browsing
+│   │   ├── memory.py        # Memory CRUD + semantic search
+│   │   ├── settings.py      # Per-user settings
+│   │   ├── voice.py         # Omnia WebRTC session lifecycle
+│   │   ├── voice_tools.py   # Tools callable by voice agent
+│   │   └── vision_ws.py     # Camera WebSocket + YOLO detection
+│   ├── auth/                # JWT tokens + Google OAuth 2.0
+│   ├── memory/              # Embeddings, vector store, RAG retrieval
+│   ├── document/            # Parsing, chunking, editing, generation
+│   ├── search/              # Google Search + web page fetching
+│   ├── vision/              # YOLO detection + change tracking
+│   ├── workers/             # Background memory summarizer
+│   ├── models/              # SQLAlchemy ORM (User, Conversation, Message, etc.)
+│   ├── config.py            # Settings with Docker secrets support
+│   └── main.py              # App entry point, migrations, startup
+├── frontend/
+│   ├── src/app/             # Next.js app router pages
+│   │   ├── chat/            # Main chat interface
+│   │   ├── memory/          # Memory dashboard
+│   │   ├── documents/       # Document library
+│   │   ├── settings/        # User settings
+│   │   ├── login/           # Login page
+│   │   └── auth/            # OAuth callback
+│   ├── src/components/      # ChatWindow, ChatSidebar, MessageBubble, etc.
+│   ├── src/hooks/           # useChat, useAuth, useVoiceSession, useVideoStream
+│   └── src/lib/             # API client (SSE streaming), auth helpers
+├── docker-compose.yml
+├── nginx.conf
+├── secrets/                 # Docker secrets (not committed)
+└── .env                     # Environment config
 ```
 
-------------------------------------------------------------------------
+## Setup
 
-# 4. Threat Model (Lightweight STRIDE)
+### Prerequisites
 
-## 4.1 Assets
+- Docker and Docker Compose
+- An OpenAI API key
+- (Optional) Omnia API key for voice, Google OAuth credentials, Google Search API key
 
--   User embeddings
--   Conversation content (ephemeral)
--   API keys
--   Access tokens
+### 1. Clone and configure
 
-## 4.2 Threat Categories
+```bash
+git clone <repo-url> memchat
+cd memchat
+cp .env.example .env
+# Edit .env with your domain and preferences
+```
 
-### Spoofing
+### 2. Create secrets
 
--   Stolen JWT tokens Mitigation:
--   Short-lived access tokens
--   Refresh tokens with rotation
+Each secret is a single file in the `secrets/` directory:
 
-### Tampering
+```bash
+mkdir -p secrets
 
--   Injection into prompt context Mitigation:
--   Input validation
--   Context boundary enforcement
+# Required
+openssl rand -hex 32 > secrets/app_secret_key
+echo "your-openai-api-key" > secrets/llm_api_key
+echo "your-openai-api-key" > secrets/embedding_api_key
+echo "your-db-password" > secrets/postgres_password
 
-### Repudiation
+# Voice (optional — voice features disabled without this)
+echo "your-omnia-api-key" > secrets/omnia_api_key
 
--   User disputes stored memory Mitigation:
--   Memory audit log (hash-only, optional)
+# Google OAuth (optional — Google login disabled without these)
+echo "your-client-id" > secrets/google_client_id
+echo "your-client-secret" > secrets/google_client_secret
 
-### Information Disclosure
+# Web search (optional — search tool disabled without these)
+echo "your-google-api-key" > secrets/google_api_key
+echo "your-search-engine-id" > secrets/google_search_engine_id
+```
 
--   Cross-user vector retrieval Mitigation:
--   Strict namespace isolation
--   Per-user encryption key
+### 3. Build and run
 
-### Denial of Service
+```bash
+docker compose build
+docker compose up -d
+```
 
--   Excessive embedding calls Mitigation:
--   Rate limiting
--   Per-user quotas
+The app will be available at the URL configured in your nginx/reverse proxy setup.
 
-### Elevation of Privilege
+### 4. Database
 
--   API key leakage Mitigation:
--   Environment variable isolation
--   Server-side only key usage
+Tables and indexes are created automatically on startup via SQLAlchemy `create_all` and inline migrations in `main.py`. No manual migration step needed.
 
-------------------------------------------------------------------------
+## Environment Variables
 
-# 5. Data Security Design
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PUBLIC_BASE_URL` | — | Public URL for OAuth callbacks (e.g. `https://memchat.cyberiad.ai`) |
+| `POSTGRES_USER` | `memchat` | Database user |
+| `POSTGRES_DB` | `memchat` | Database name |
+| `REDIS_URL` | `redis://redis:6379/0` | Redis connection |
+| `LLM_MODEL` | `gpt-4o` | Default chat model |
+| `EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model |
+| `EMBEDDING_DIMENSIONS` | `1536` | Embedding vector size |
+| `YOLO_MODEL` | `yolov8n.pt` | Object detection model |
+| `YOLO_CONFIDENCE` | `0.35` | Detection threshold |
+| `VISION_CHANGE_COOLDOWN` | `10` | Seconds between vision analyses |
 
--   Embeddings stored instead of raw text
--   Optional at-rest encryption
--   No memory used for global training
--   Namespace isolation required
--   Access control enforced at API layer
+## How It Works
 
-------------------------------------------------------------------------
+### RAG Memory
 
-# 6. Deployment Model
+Every chat exchange is embedded and stored in pgvector. On each new message, the system retrieves the top-5 most similar memories via cosine distance and injects them as context into the LLM prompt. A background worker runs hourly to summarize and re-embed old memories, keeping the knowledge base compact.
 
--   Single cloud VM or container
--   PostgreSQL + pgvector OR managed vector DB
--   Background job worker (Celery or simple async scheduler)
--   Reverse proxy (NGINX optional)
+### Chat Flow
 
-------------------------------------------------------------------------
+```
+User message
+  → Embed query → Vector search (top-5 memories)
+  → Build prompt: system prompt + custom instructions + memory context
+                   + document context + conversation history + user message
+  → Stream LLM response (with tool calls: web search, document creation, etc.)
+  → Save messages → Embed exchange in background → Update conversation summary
+```
 
-# 7. Performance Targets
+### Voice Sessions
 
--   Retrieval latency: <150ms
--   LLM roundtrip: <3s
--   Embedding write latency: <100ms
--   Memory size target: <10k embeddings per user (initial scale)
+Voice uses Omnia (Ultravox) for WebRTC audio. The voice agent receives the user's recent conversation history and has access to tools for RAG queries, memory storage, and web search. Transcripts are parsed back into user/assistant messages and embedded into memory.
 
-------------------------------------------------------------------------
+### Document Processing
 
-# 8. Roadmap
+Uploaded files are parsed (PDF, DOCX, XLSX, FDX, images), chunked into ~500-token segments, batch-embedded, and stored in the vector database. Large documents are scene-split (FDX) or section-split with a table of contents, allowing the LLM to read specific sections on demand rather than loading everything into context.
 
-## Phase 1 --- Core System (Weeks 1--3)
+## Authentication
 
--   [ ] FastAPI chat endpoint
--   [ ] Embedding generation
--   [ ] Vector DB integration
--   [ ] Basic retrieval injection
--   [ ] Per-user namespace isolation
+- **Email/password**: bcrypt-hashed passwords, JWT access tokens (60 min) + refresh tokens (30 days)
+- **Google OAuth 2.0**: Server-side code exchange flow with CSRF state validation
+- All API calls use `Authorization: Bearer <token>` headers
+- Tokens stored in browser localStorage
 
-Deliverable: Working RAG chat with persistent embeddings
+## API Overview
 
-------------------------------------------------------------------------
+| Router | Prefix | Endpoints |
+|--------|--------|-----------|
+| Auth | `/api/auth` | register, login, refresh, me, Google OAuth |
+| Chat | `/api/chat` | stream, history, edit, delete, regenerate |
+| Conversations | `/api/conversations` | list, create, delete, search, export |
+| Documents | `/api/documents` | upload, download, edit |
+| Document Library | `/api/documents/library` | list, detail, delete |
+| Memory | `/api/memory` | list, search, add, delete |
+| Settings | `/api/settings` | get, patch, list voices |
+| Voice | `/api/voice` | start, end |
+| Voice Tools | `/api/voice-tools` | rag-query, store-memory, web-search, web-fetch |
+| Vision | `/ws/vision` | WebSocket (YOLO detection + GPT-4o analysis) |
+| Health | `/api/health` | status check |
 
-## Phase 2 --- Memory Lifecycle (Weeks 4--6)
+## Database Schema
 
--   [ ] Background summarization worker
--   [ ] Re-embedding summaries
--   [ ] Memory pruning logic
--   [ ] Simple admin inspection tool
+**PostgreSQL with pgvector extension.** Key tables:
 
-Deliverable: Stable long-running memory system
+- **users** — id, email, hashed_password, google_id, display_name
+- **user_settings** — agent_name, voice, LLM model, temperature, custom_system_prompt, etc.
+- **conversations** — title, summary, timestamps
+- **messages** — role, content, source (text/voice/vision), conversation_id
+- **memory_embeddings** — content, embedding (Vector 1536), HNSW-indexed
+- **conversation_documents** — filename, content, original_bytes, sections_json
+- **voice_sessions** — omnia_call_id, status, transcript, summary
 
-------------------------------------------------------------------------
+**Indexes**: HNSW on embeddings for fast vector search, GIN on message content for full-text search, B-tree on all foreign keys and timestamps.
 
-## Phase 3 --- Security Hardening (Weeks 7--8)
-
--   [ ] JWT rotation
--   [ ] Rate limiting
--   [ ] Input sanitization layer
--   [ ] Logging and monitoring
--   [ ] Threat model review
-
-Deliverable: Production-ready MVP
-
-------------------------------------------------------------------------
-
-## Phase 4 --- Advanced Capabilities
-
--   [ ] Personal embedding model option
--   [ ] User-controlled memory deletion
--   [ ] Edge-device RAG support
--   [ ] Multi-tier memory architecture
--   [ ] Structured memory schema
-
-------------------------------------------------------------------------
-
-# 9. Future Extensions
-
--   Hybrid symbolic + embedding memory
--   Memory salience scoring
--   Hierarchical context injection
--   Growing context window simulation via retrieval layers
-
-------------------------------------------------------------------------
-
-# 10. Repository Structure (Suggested)
-
-    /frontend
-    /backend
-        /api
-        /memory
-        /workers
-        /auth
-    /docs
-    docker-compose.yml
-    README.md
-
-------------------------------------------------------------------------
-
-# 11. License
+## License
 
 To be determined.
-
-------------------------------------------------------------------------
-
-End of Document.
