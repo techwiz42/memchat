@@ -19,9 +19,9 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from auth.jwt import ALGORITHM
 from config import settings
 from document.vision import analyze_image
-from memory.embeddings import embed_text
+from memory.embeddings import embed_text, flush_embedding_tokens
 from memory.vector_store import MemoryEmbedding
-from models import Message, MessageSource
+from models import Message, MessageSource, TokenUsage
 from models.base import async_session_factory
 from vision.change_detector import (
     ChangeDetectorState,
@@ -72,7 +72,7 @@ async def _analyze_and_send(
     """
     try:
         # Call existing vision analysis
-        analysis = await analyze_image("camera_frame.jpg", frame_bytes, settings.llm_api_key)
+        analysis, usage = await analyze_image("camera_frame.jpg", frame_bytes, settings.llm_api_key)
 
         # Send analysis to client
         await ws.send_json({
@@ -81,7 +81,7 @@ async def _analyze_and_send(
             "trigger": trigger,
         })
 
-        # Store as VISION message and embed for RAG
+        # Store as VISION message and log token usage
         async with async_session_factory() as db:
             msg = Message(
                 user_id=user_id,
@@ -90,7 +90,15 @@ async def _analyze_and_send(
                 source=MessageSource.VISION,
             )
             db.add(msg)
-
+            if usage is not None:
+                db.add(TokenUsage(
+                    user_id=user_id,
+                    model="gpt-4o",
+                    prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
+                    completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
+                    total_tokens=getattr(usage, "total_tokens", 0) or 0,
+                    source="vision",
+                ))
             await db.commit()
 
         # Embed vision analysis in background (don't block the websocket)
@@ -114,6 +122,7 @@ async def _background_embed_vision(user_id: uuid.UUID, analysis: str):
         async with async_session_factory() as db:
             db.add(MemoryEmbedding(user_id=user_id, content=content, embedding=embedding))
             await db.commit()
+        await flush_embedding_tokens(user_id)
     except Exception as e:
         logger.error("Background vision embedding failed for user %s: %s", user_id, e)
 

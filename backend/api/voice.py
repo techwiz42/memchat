@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth.jwt import get_current_user_id
 from config import settings
-from memory.embeddings import embed_text
+from memory.embeddings import embed_text, flush_embedding_tokens
 from memory.vector_store import MemoryEmbedding
 from models import VoiceSession, VoiceSessionStatus, Message, MessageSource, get_db
 from models.base import async_session_factory
@@ -234,6 +234,7 @@ async def _background_embed_transcript(user_id: uuid.UUID, transcript: str):
         async with async_session_factory() as db:
             db.add(MemoryEmbedding(user_id=user_id, content=full_text, embedding=embedding))
             await db.commit()
+        await flush_embedding_tokens(user_id)
     except Exception as e:
         logger.error("Background voice embedding failed for user %s: %s", user_id, e)
 

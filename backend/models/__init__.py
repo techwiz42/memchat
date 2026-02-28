@@ -3,6 +3,7 @@ from .user import User
 from .user_settings import UserSettings
 from .conversation import Conversation, Message, MessageSource, ConversationDocument
 from .voice_session import VoiceSession, VoiceSessionStatus
+from .token_usage import TokenUsage
 
 __all__ = [
     "Base",
@@ -17,4 +18,5 @@ __all__ = [
     "ConversationDocument",
     "VoiceSession",
     "VoiceSessionStatus",
+    "TokenUsage",
 ]

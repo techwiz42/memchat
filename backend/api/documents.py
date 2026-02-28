@@ -70,7 +70,7 @@ async def upload_document(
     # Extract text (or analyze image)
     try:
         if ext in IMAGE_EXTENSIONS:
-            extracted = await analyze_image(filename, content, settings.llm_api_key)
+            extracted, _usage = await analyze_image(filename, content, settings.llm_api_key)
         else:
             extracted = await extract_text(filename, content)
     except ValueError as e:

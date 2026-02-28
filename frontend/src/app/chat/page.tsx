@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useRef, useCallback } from "react";
+import { Suspense, useState, useEffect, useRef, useCallback } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { isLoggedIn, getAccessToken, refreshAccessToken } from "@/lib/auth";
@@ -157,9 +157,25 @@ function ChatPageInner() {
     }
   };
 
-  const handleExport = useCallback(async () => {
+  const [showExportMenu, setShowExportMenu] = useState(false);
+  const exportMenuRef = useRef<HTMLDivElement>(null);
+
+  // Close export menu on click outside
+  useEffect(() => {
+    if (!showExportMenu) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (exportMenuRef.current && !exportMenuRef.current.contains(e.target as Node)) {
+        setShowExportMenu(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [showExportMenu]);
+
+  const handleExport = useCallback(async (format: string) => {
     if (!conversationId) return;
-    const url = `/api/conversations/${conversationId}/export`;
+    setShowExportMenu(false);
+    const url = `/api/conversations/${conversationId}/export?format=${format}`;
     let token = getAccessToken();
     let res = await fetch(url, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -174,7 +190,8 @@ function ChatPageInner() {
     const blob = await res.blob();
     const disposition = res.headers.get("Content-Disposition") || "";
     const match = disposition.match(/filename="?([^"]+)"?/);
-    const filename = match ? match[1] : "conversation.md";
+    const fallback = `conversation.${format}`;
+    const filename = match ? match[1] : fallback;
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = filename;
@@ -228,16 +245,40 @@ function ChatPageInner() {
             onStop={handleStopCamera}
           />
           {conversationId && (
-            <button
-              onClick={handleExport}
-              className="text-gray-400 hover:text-gray-600 transition-colors"
-              title="Export conversation"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5">
-                <path d="M10.75 2.75a.75.75 0 0 0-1.5 0v8.614L6.295 8.235a.75.75 0 1 0-1.09 1.03l4.25 4.5a.75.75 0 0 0 1.09 0l4.25-4.5a.75.75 0 0 0-1.09-1.03l-2.955 3.129V2.75Z" />
-                <path d="M3.5 12.75a.75.75 0 0 0-1.5 0v2.5A2.75 2.75 0 0 0 4.75 18h10.5A2.75 2.75 0 0 0 18 15.25v-2.5a.75.75 0 0 0-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5Z" />
-              </svg>
-            </button>
+            <div className="relative" ref={exportMenuRef}>
+              <button
+                onClick={() => setShowExportMenu((v) => !v)}
+                className="text-gray-400 hover:text-gray-600 transition-colors"
+                title="Export conversation"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5">
+                  <path d="M10.75 2.75a.75.75 0 0 0-1.5 0v8.614L6.295 8.235a.75.75 0 1 0-1.09 1.03l4.25 4.5a.75.75 0 0 0 1.09 0l4.25-4.5a.75.75 0 0 0-1.09-1.03l-2.955 3.129V2.75Z" />
+                  <path d="M3.5 12.75a.75.75 0 0 0-1.5 0v2.5A2.75 2.75 0 0 0 4.75 18h10.5A2.75 2.75 0 0 0 18 15.25v-2.5a.75.75 0 0 0-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5Z" />
+                </svg>
+              </button>
+              {showExportMenu && (
+                <div className="absolute right-0 mt-2 w-44 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-50">
+                  <button
+                    onClick={() => handleExport("md")}
+                    className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                  >
+                    Markdown (.md)
+                  </button>
+                  <button
+                    onClick={() => handleExport("docx")}
+                    className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                  >
+                    Word (.docx)
+                  </button>
+                  <button
+                    onClick={() => handleExport("pdf")}
+                    className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                  >
+                    PDF (.pdf)
+                  </button>
+                </div>
+              )}
+            </div>
           )}
           <span className="text-sm text-gray-500">{user?.email}</span>
           <Link
@@ -258,6 +299,17 @@ function ChatPageInner() {
               <path d="M3 3.5A1.5 1.5 0 0 1 4.5 2h6.879a1.5 1.5 0 0 1 1.06.44l4.122 4.12A1.5 1.5 0 0 1 17 7.622V16.5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 3 16.5v-13Zm10.5 5.5a1 1 0 0 0-1-1H7.5a1 1 0 0 0 0 2h5a1 1 0 0 0 1-1Zm0 3a1 1 0 0 0-1-1H7.5a1 1 0 0 0 0 2h5a1 1 0 0 0 1-1Zm-7-3.75a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Z" />
             </svg>
           </Link>
+          {user?.email === "pete@cyberiad.ai" && (
+            <Link
+              href="/admin"
+              className="text-gray-400 hover:text-gray-600 transition-colors"
+              title="Admin"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5">
+                <path fillRule="evenodd" d="M2 4.25A2.25 2.25 0 0 1 4.25 2h11.5A2.25 2.25 0 0 1 18 4.25v8.5A2.25 2.25 0 0 1 15.75 15h-3.105a3.501 3.501 0 0 0 1.1 1.677A.75.75 0 0 1 13.26 18H6.74a.75.75 0 0 1-.484-1.323A3.501 3.501 0 0 0 7.355 15H4.25A2.25 2.25 0 0 1 2 12.75v-8.5Zm1.5 0a.75.75 0 0 1 .75-.75h11.5a.75.75 0 0 1 .75.75v7.5a.75.75 0 0 1-.75.75H4.25a.75.75 0 0 1-.75-.75v-7.5Z" clipRule="evenodd" />
+              </svg>
+            </Link>
+          )}
           <Link
             href="/settings"
             className="text-gray-400 hover:text-gray-600 transition-colors"

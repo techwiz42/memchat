@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from models.base import Base, async_engine
-from api import auth, chat, conversations, documents, settings, voice, voice_tools, vision_ws, memory, document_library
+from api import admin, auth, chat, conversations, documents, settings, voice, voice_tools, vision_ws, memory, document_library
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -21,6 +21,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(admin.router)
 app.include_router(auth.router)
 app.include_router(chat.router)
 app.include_router(conversations.router)

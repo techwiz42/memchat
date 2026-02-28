@@ -17,10 +17,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth.jwt import get_current_user_id
 from config import settings
-from memory.embeddings import embed_text
+from memory.embeddings import embed_text, embed_texts, flush_embedding_tokens
 from memory.rag import retrieve_context
 from memory.vector_store import MemoryEmbedding
-from models import Conversation, ConversationDocument, Message, MessageSource, get_db
+from models import Conversation, ConversationDocument, Message, MessageSource, TokenUsage, get_db
 from models.base import async_session_factory
 from api.settings import get_or_create_settings
 from search.google_search import web_search
@@ -48,6 +48,30 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 SUMMARY_MODEL = "gpt-4o-mini"
 
 _tokenizer = tiktoken.get_encoding("cl100k_base")
+
+
+async def _log_token_usage(
+    user_id: uuid.UUID,
+    model: str,
+    usage,
+    source: str = "chat",
+) -> None:
+    """Persist an LLM usage record in a fresh DB session (fire-and-forget safe)."""
+    if usage is None:
+        return
+    try:
+        async with async_session_factory() as session:
+            session.add(TokenUsage(
+                user_id=user_id,
+                model=model,
+                prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
+                completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
+                total_tokens=getattr(usage, "total_tokens", 0) or 0,
+                source=source,
+            ))
+            await session.commit()
+    except Exception as e:
+        logger.warning("Failed to log token usage: %s", e)
 _llm_client: AsyncOpenAI | None = None
 
 
@@ -85,10 +109,66 @@ async def _generate_summary(
             max_tokens=100,
             temperature=0.3,
         )
-        return resp.choices[0].message.content.strip()
+        return resp.choices[0].message.content.strip(), resp.usage
     except Exception as e:
         logger.warning("Failed to generate conversation summary: %s", e)
-        return existing_summary or ""
+        return existing_summary or "", None
+
+
+async def _extract_memories(
+    client: AsyncOpenAI,
+    user_message: str,
+    assistant_response: str,
+) -> list[str]:
+    """Extract significant memorable facts from a conversation exchange.
+
+    Uses a fast model to identify personal details, preferences, decisions,
+    project context, and other facts worth remembering. Returns an empty list
+    for trivial exchanges (greetings, chitchat).
+    """
+    prompt = (
+        "You are a memory extraction system. Analyze the following conversation exchange "
+        "and extract significant facts that a person would naturally remember about the user.\n\n"
+        "Extract facts like:\n"
+        "- Personal details (name, location, occupation, age)\n"
+        "- Preferences and opinions\n"
+        "- Decisions made or plans stated\n"
+        "- Project/work context (project names, technologies, goals)\n"
+        "- Technical details and specifications discussed\n"
+        "- Life events, milestones, or circumstances mentioned\n"
+        "- Goals, aspirations, or problems they're working on\n"
+        "- Relationships or people mentioned\n\n"
+        "Rules:\n"
+        "- Each fact should be a concise, standalone statement (one sentence)\n"
+        "- Write facts from a third-person perspective about the user (e.g. 'User is working on...')\n"
+        "- Skip trivial pleasantries, meta-conversation, and generic chitchat\n"
+        "- If there is nothing significant to remember, return an empty array\n"
+        "- Return ONLY a JSON array of strings, no other text\n\n"
+        f"User: {user_message}\n"
+        f"Assistant: {assistant_response}\n\n"
+        "Extracted memories (JSON array):"
+    )
+    try:
+        resp = await client.chat.completions.create(
+            model=SUMMARY_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=500,
+            temperature=0,
+        )
+        raw = resp.choices[0].message.content.strip()
+        usage = resp.usage
+        # Strip markdown code fences if present
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
+            if raw.endswith("```"):
+                raw = raw[:-3].strip()
+        memories = json.loads(raw)
+        if isinstance(memories, list):
+            return [m for m in memories if isinstance(m, str) and m.strip()], usage
+        return [], usage
+    except (json.JSONDecodeError, Exception) as e:
+        logger.warning("Failed to extract memories: %s", e)
+        return [], None
 
 
 class ChatRequest(BaseModel):
@@ -705,20 +785,29 @@ async def _background_embed_and_summarize(
     existing_summary: str | None,
     client: AsyncOpenAI,
 ):
-    """Background: embed the exchange and update conversation summary in parallel."""
+    """Background: extract memories from the exchange and update conversation summary."""
     try:
-        exchange_text = f"User: {user_message}\nAssistant: {assistant_content}"
-
-        # Run embedding and summary generation concurrently
-        embedding, summary = await asyncio.gather(
-            embed_text(exchange_text),
+        # Run memory extraction and summary generation concurrently
+        (memories, mem_usage), (summary, sum_usage) = await asyncio.gather(
+            _extract_memories(client, user_message, assistant_content),
             _generate_summary(client, user_message, assistant_content, existing_summary),
         )
+        # Log token usage for both background LLM calls
+        await _log_token_usage(user_id, SUMMARY_MODEL, mem_usage, "memory_extraction")
+        await _log_token_usage(user_id, SUMMARY_MODEL, sum_usage, "summary")
 
         async with async_session_factory() as db:
-            db.add(MemoryEmbedding(
-                user_id=user_id, content=exchange_text, embedding=embedding,
-            ))
+            # Only embed if significant memories were extracted
+            if memories:
+                embeddings = await embed_texts(memories)
+                for memory_text, embedding in zip(memories, embeddings):
+                    db.add(MemoryEmbedding(
+                        user_id=user_id, content=memory_text, embedding=embedding,
+                    ))
+                logger.info(
+                    "Extracted %d memories from conv %s", len(memories), conv_id,
+                )
+
             result = await db.execute(
                 select(Conversation).where(Conversation.id == conv_id)
             )
@@ -726,6 +815,9 @@ async def _background_embed_and_summarize(
             if conversation:
                 conversation.summary = summary
             await db.commit()
+
+        # Flush accumulated embedding token usage
+        await flush_embedding_tokens(user_id)
     except Exception as e:
         logger.error("Background embed/summarize failed for conv %s: %s", conv_id, e)
 
@@ -756,6 +848,7 @@ async def chat(
         except Exception as e:
             logger.error("LLM API call failed on iteration %d: %s", iteration, e)
             break
+        asyncio.create_task(_log_token_usage(user_id, llm_kwargs.get("model", ""), completion.usage, "chat"))
         choice = completion.choices[0]
         logger.info(
             "LLM iteration %d: finish_reason=%s, has_tool_calls=%s, has_content=%s, content_len=%s",
@@ -836,8 +929,9 @@ async def _chat_stream(
 
     assistant_content = None
     for iteration in range(MAX_TOOL_ITERATIONS):
-        # Enable streaming
+        # Enable streaming with usage reporting
         llm_kwargs["stream"] = True
+        llm_kwargs["stream_options"] = {"include_usage": True}
         try:
             stream = await client.chat.completions.create(**llm_kwargs)
         except Exception as e:
@@ -847,8 +941,14 @@ async def _chat_stream(
         accumulated_content = ""
         accumulated_tool_calls: dict[int, dict] = {}  # {index: {id, name, args}}
         finish_reason = None
+        stream_usage = None
 
         async for chunk in stream:
+            # Final chunk with usage has empty choices
+            if hasattr(chunk, "usage") and chunk.usage is not None:
+                stream_usage = chunk.usage
+            if not chunk.choices:
+                continue
             delta = chunk.choices[0].delta
             finish_reason = chunk.choices[0].finish_reason
 
@@ -880,6 +980,7 @@ async def _chat_stream(
             "LLM iteration %d (streamed): finish_reason=%s, content_len=%d, tool_calls=%d",
             iteration, finish_reason, len(accumulated_content), len(accumulated_tool_calls),
         )
+        asyncio.create_task(_log_token_usage(user_id, llm_kwargs.get("model", ""), stream_usage, "chat"))
 
         if finish_reason == "length":
             logger.warning("LLM output truncated (finish_reason=length) on iteration %d", iteration)

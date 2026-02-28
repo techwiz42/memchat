@@ -98,4 +98,4 @@ async def analyze_image(filename: str, content: bytes, api_key: str) -> str:
         len(result),
         filename,
     )
-    return result
+    return result, response.usage

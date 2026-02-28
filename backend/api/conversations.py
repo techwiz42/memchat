@@ -1,5 +1,6 @@
 """Conversations CRUD — list, create, delete, search, export user conversations."""
 
+import io
 import uuid
 from datetime import datetime, timezone
 
@@ -134,13 +135,58 @@ async def search_conversations(
     ]
 
 
+def _generate_docx(title: str, messages_list: list) -> bytes:
+    """Generate a .docx file from conversation messages."""
+    from docx import Document
+    from docx.shared import Pt, RGBColor
+
+    doc = Document()
+    doc.add_heading(title, level=1)
+    for msg in messages_list:
+        ts = msg.created_at.strftime("%Y-%m-%d %H:%M")
+        speaker = "User" if msg.role == "user" else "Assistant"
+        p = doc.add_paragraph()
+        run = p.add_run(f"{speaker} ({ts}): ")
+        run.bold = True
+        run.font.size = Pt(10)
+        run.font.color.rgb = RGBColor(0x44, 0x44, 0x44)
+        p.add_run(msg.content)
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def _generate_pdf(title: str, messages_list: list) -> bytes:
+    """Generate a .pdf file from conversation messages."""
+    from fpdf import FPDF
+
+    pdf = FPDF()
+    pdf.add_font("DejaVu", "", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+    pdf.add_font("DejaVu", "B", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
+    pdf.set_auto_page_break(auto=True, margin=20)
+    pdf.add_page()
+    pdf.set_font("DejaVu", size=18)
+    pdf.cell(0, 12, title, new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(4)
+    for msg in messages_list:
+        ts = msg.created_at.strftime("%Y-%m-%d %H:%M")
+        speaker = "User" if msg.role == "user" else "Assistant"
+        pdf.set_font("DejaVu", style="B", size=10)
+        pdf.cell(0, 6, f"{speaker} ({ts}):", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("DejaVu", size=10)
+        pdf.multi_cell(0, 5, msg.content)
+        pdf.ln(3)
+    return bytes(pdf.output())
+
+
 @router.get("/{conversation_id}/export")
 async def export_conversation(
     conversation_id: uuid.UUID,
+    format: str = Query("md", pattern="^(md|docx|pdf)$"),
     user_id: uuid.UUID = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ):
-    """Export a conversation as a Markdown file download."""
+    """Export a conversation as Markdown, Word, or PDF."""
     result = await db.execute(
         select(Conversation).where(
             Conversation.id == conversation_id,
@@ -157,19 +203,28 @@ async def export_conversation(
         .order_by(Message.created_at)
     )
     messages = msg_result.scalars().all()
-
-    lines = [f"# {conv.title}\n"]
-    for msg in messages:
-        ts = msg.created_at.strftime("%Y-%m-%d %H:%M")
-        speaker = "User" if msg.role == "user" else "Assistant"
-        lines.append(f"\n**{speaker}** ({ts}):\n{msg.content}\n")
-
-    md_content = "\n".join(lines)
     safe_title = conv.title.replace("/", "-").replace("\\", "-")[:80]
-    filename = f"{safe_title}.md"
+
+    if format == "docx":
+        content = _generate_docx(conv.title, messages)
+        media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        filename = f"{safe_title}.docx"
+    elif format == "pdf":
+        content = _generate_pdf(conv.title, messages)
+        media_type = "application/pdf"
+        filename = f"{safe_title}.pdf"
+    else:
+        lines = [f"# {conv.title}\n"]
+        for msg in messages:
+            ts = msg.created_at.strftime("%Y-%m-%d %H:%M")
+            speaker = "User" if msg.role == "user" else "Assistant"
+            lines.append(f"\n**{speaker}** ({ts}):\n{msg.content}\n")
+        content = "\n".join(lines)
+        media_type = "text/markdown"
+        filename = f"{safe_title}.md"
 
     return Response(
-        content=md_content,
-        media_type="text/markdown",
+        content=content,
+        media_type=media_type,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

@@ -14,7 +14,7 @@ export default function PrivacyPolicyPage() {
         <div className="bg-white rounded-2xl shadow-lg p-8">
           <h1 className="text-2xl font-bold mb-6">Privacy Policy</h1>
           <p className="text-sm text-gray-500 mb-8">
-            Last updated: February 23, 2026
+            Last updated: February 27, 2026
           </p>
 
           <div className="space-y-6 text-sm text-gray-700 leading-relaxed">
@@ -43,6 +43,12 @@ export default function PrivacyPolicyPage() {
                   <strong>Voice transcripts:</strong> transcriptions of voice
                   interactions conducted through the app.
                 </li>
+                <li>
+                  <strong>Extracted memories:</strong> significant facts and
+                  details automatically identified from your conversations
+                  (e.g. preferences, project context, personal details you
+                  share).
+                </li>
               </ul>
             </section>
 
@@ -52,14 +58,21 @@ export default function PrivacyPolicyPage() {
               </h2>
               <ul className="list-disc pl-5 space-y-1">
                 <li>
-                  <strong>RAG knowledge base:</strong> your conversations and
-                  uploaded documents are embedded and stored to provide
-                  context-aware responses in future interactions.
+                  <strong>Automatic memory extraction:</strong> Memchat
+                  automatically extracts and remembers significant information
+                  from your conversations — facts, preferences, and details you
+                  share. These memories are private to your account and used to
+                  provide personalized, context-aware responses.
+                </li>
+                <li>
+                  <strong>Memory management:</strong> you can view, search, and
+                  delete individual memories on the Memories page at any time.
                 </li>
                 <li>
                   <strong>LLM processing:</strong> your messages are sent to
-                  OpenAI&apos;s API for generating AI responses. OpenAI&apos;s
-                  data usage policies apply to data sent to their API.
+                  OpenAI&apos;s API for generating AI responses and extracting
+                  memories. OpenAI&apos;s data usage policies apply to data sent
+                  to their API.
                 </li>
                 <li>
                   We do not sell your personal data to third parties.
