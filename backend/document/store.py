@@ -1,72 +1,67 @@
-"""In-memory document store with automatic expiry."""
+"""Database-backed document store for generated/edited downloads."""
 
 import uuid
-import threading
-from datetime import datetime, timezone, timedelta
-from dataclasses import dataclass
+import logging
 
-TTL_SECONDS = 3600  # 1 hour
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from models import GeneratedDocument
 
-@dataclass
-class StoredDocument:
-    user_id: uuid.UUID
-    filename: str
-    data: bytes
-    expires_at: datetime
+logger = logging.getLogger(__name__)
 
 
-_store: dict[str, StoredDocument] = {}
-_lock = threading.Lock()
-
-
-def store_document(user_id: uuid.UUID, filename: str, data: bytes) -> str:
-    """Store a generated document and return its ID.
+async def store_document(
+    user_id: uuid.UUID,
+    filename: str,
+    data: bytes,
+    db: AsyncSession,
+) -> str:
+    """Persist a generated document and return its ID.
 
     Args:
         user_id: Owner of the document.
         filename: Original filename (for Content-Disposition).
         data: Raw file bytes.
+        db: Async database session.
 
     Returns:
         A unique document ID (UUID string).
     """
     doc_id = str(uuid.uuid4())
-    expires_at = datetime.now(timezone.utc) + timedelta(seconds=TTL_SECONDS)
-    with _lock:
-        _cleanup()
-        _store[doc_id] = StoredDocument(
-            user_id=user_id,
-            filename=filename,
-            data=data,
-            expires_at=expires_at,
-        )
+    doc = GeneratedDocument(
+        id=doc_id,
+        user_id=user_id,
+        filename=filename,
+        data=data,
+    )
+    db.add(doc)
+    await db.flush()
     return doc_id
 
 
-def get_document(doc_id: str, user_id: uuid.UUID) -> tuple[str, bytes] | None:
-    """Retrieve a stored document if it belongs to the user and hasn't expired.
+async def get_document(
+    doc_id: str,
+    user_id: uuid.UUID,
+    db: AsyncSession,
+) -> tuple[str, bytes] | None:
+    """Retrieve a stored document if it belongs to the user.
 
     Args:
         doc_id: The document ID returned by store_document.
         user_id: The requesting user's ID.
+        db: Async database session.
 
     Returns:
-        (filename, data) tuple, or None if not found / expired / wrong user.
+        (filename, data) tuple, or None if not found / wrong user.
     """
-    with _lock:
-        _cleanup()
-        doc = _store.get(doc_id)
-        if doc is None:
-            return None
-        if doc.user_id != user_id:
-            return None
-        return doc.filename, doc.data
-
-
-def _cleanup() -> None:
-    """Remove expired entries. Called while holding _lock."""
-    now = datetime.now(timezone.utc)
-    expired = [k for k, v in _store.items() if v.expires_at <= now]
-    for k in expired:
-        del _store[k]
+    result = await db.execute(
+        select(GeneratedDocument).where(
+            GeneratedDocument.id == doc_id,
+            GeneratedDocument.user_id == user_id,
+        )
+    )
+    doc = result.scalar_one_or_none()
+    if doc is None:
+        return None
+    return doc.filename, doc.data

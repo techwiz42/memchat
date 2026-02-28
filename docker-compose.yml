@@ -84,6 +84,26 @@ services:
       - backend
       - frontend
 
+  mentra-bridge:
+    build: ./mentra-bridge
+    restart: unless-stopped
+    environment:
+      MENTRA_PACKAGE_NAME: ${MENTRA_PACKAGE_NAME:-ai.cyberiad.memchat}
+      MENTRA_API_KEY_FILE: /run/secrets/mentra_api_key
+      MEMCHAT_BASE_URL: http://backend:8000
+      MEMCHAT_WS_URL: ws://backend:8000
+      REDIS_URL: redis://redis:6379/0
+      PAIRING_BASE_URL: https://mentra.cyberiad.ai
+    secrets:
+      - mentra_api_key
+    depends_on:
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    ports:
+      - "127.0.0.1:3100:3100"
+
 secrets:
   omnia_api_key:
     file: ./secrets/omnia_api_key
@@ -103,6 +123,8 @@ secrets:
     file: ./secrets/google_api_key
   google_search_engine_id:
     file: ./secrets/google_search_engine_id
+  mentra_api_key:
+    file: ./secrets/mentra_api_key
 
 volumes:
   pgdata:

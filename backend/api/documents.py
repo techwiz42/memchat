@@ -83,7 +83,7 @@ async def upload_document(
         )
 
     # Store the original file for later download
-    doc_id = store_document(user_id, filename, content)
+    doc_id = await store_document(user_id, filename, content, db)
     download_url = f"/api/documents/download/{doc_id}"
 
     # Chunk the text
@@ -203,7 +203,7 @@ CONTENT_TYPES = {
     ".pdf": "application/pdf",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    ".fdx": "application/xml",
+    ".fdx": "application/octet-stream",
 }
 
 
@@ -211,9 +211,10 @@ CONTENT_TYPES = {
 async def download_document(
     doc_id: str,
     user_id: uuid.UUID = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
 ):
     """Download a generated document by its ID."""
-    result = get_document(doc_id, user_id)
+    result = await get_document(doc_id, user_id, db)
     if result is None:
         raise HTTPException(status_code=404, detail="Document not found or expired")
 

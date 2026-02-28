@@ -690,7 +690,7 @@ async def _execute_tool_call(
                         break
             if doc_bytes is None:
                 doc_bytes = generate_document(doc_filename, doc_content)
-            doc_id = store_document(user_id, doc_filename, doc_bytes)
+            doc_id = await store_document(user_id, doc_filename, doc_bytes, db)
             download_url = f"/api/documents/download/{doc_id}"
             result = (
                 f"Document created successfully. "
@@ -1359,7 +1359,7 @@ async def _handle_edit_section(
             pass  # non-critical; original_bytes is the source of truth
 
         # Store for download
-        doc_id = store_document(user_id, doc.filename, edited_bytes)
+        doc_id = await store_document(user_id, doc.filename, edited_bytes, db)
         download_url = f"/api/documents/download/{doc_id}"
 
         sect_heading = ""
@@ -1426,7 +1426,7 @@ async def _handle_find_replace(
         except Exception:
             pass
 
-        doc_id = store_document(user_id, doc.filename, edited_bytes)
+        doc_id = await store_document(user_id, doc.filename, edited_bytes, db)
         download_url = f"/api/documents/download/{doc_id}"
 
         return (
