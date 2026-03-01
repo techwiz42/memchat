@@ -42,10 +42,12 @@ async def startup():
         await conn.execute(
             __import__("sqlalchemy").text("CREATE EXTENSION IF NOT EXISTS vector")
         )
-        # Migrate: add 'vision' to messagesource enum if not present
+        # Migrate: add 'VISION' to messagesource enum if not present
+        # NOTE: SQLAlchemy persists enum NAMES (not values) for PEP 435 enums,
+        # so the DB value must be 'VISION' (the name), not 'vision' (the value).
         await conn.execute(
             __import__("sqlalchemy").text(
-                "ALTER TYPE messagesource ADD VALUE IF NOT EXISTS 'vision'"
+                "ALTER TYPE messagesource ADD VALUE IF NOT EXISTS 'VISION'"
             )
         )
         await conn.run_sync(Base.metadata.create_all)

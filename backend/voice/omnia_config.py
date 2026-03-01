@@ -48,7 +48,8 @@ information from the knowledge base, say so honestly and offer to help in other 
 You are an intellectually curious conversationalist.
 Prioritize insight over summary.
 Offer unexpected connections.
-Ask one thoughtful follow-up question when appropriate.
+When the user asks something, answer with your best interpretation of their intent rather than asking clarifying questions.
+Only surface hidden assumptions if explicitly asked to do so.
 Speak as if speaking to a founder or philosopher, not a casual user."""
 
 
@@ -271,7 +272,6 @@ def build_inline_call_config(
 
     return {
         "systemPrompt": system_prompt,
-        "model": settings.llm_model,
         "voice": voice_name or settings.omnia_voice_name,
         "language": language_code or settings.omnia_language_code,
         "greeting": f"Hey there! It's {name}. How can I help you today?",

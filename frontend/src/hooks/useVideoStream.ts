@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useRef } from "react";
-import { getAccessToken } from "@/lib/auth";
+import { getAccessToken, refreshAccessToken } from "@/lib/auth";
 
 export type VideoStatus = "idle" | "connecting" | "streaming" | "disconnecting";
 
@@ -47,10 +47,16 @@ export function useVideoStream({ onAnalysis }: UseVideoStreamOptions = {}) {
       offscreenVideo.playsInline = true;
       await offscreenVideo.play();
 
-      // Connect WebSocket with JWT auth
-      const token = getAccessToken();
+      // Connect WebSocket with JWT auth (refresh if expired)
+      let token = getAccessToken();
       if (!token) {
         throw new Error("Not authenticated");
+      }
+      // Proactively refresh to avoid 403 on WebSocket upgrade
+      // (WebSockets can't retry with a new token like HTTP requests can)
+      const freshToken = await refreshAccessToken();
+      if (freshToken) {
+        token = freshToken;
       }
 
       const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
